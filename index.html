@@ -628,6 +628,8 @@ async function syncNow(silent){
   try{
     const remote=new Map((await RB.list()).map(r=>[r.id,r])),tomb=getTomb();
     let tds=await DB.all('tds'),errs=await DB.all('errs'),changed=false;
+    for(const d of tds) if(!d.updated){d.updated=Date.now();await DB.putRaw('tds',d)}
+    for(const d of errs) if(!d.updated){d.updated=Date.now();await DB.putRaw('errs',d)}
     const tdMap=new Map(tds.map(t=>[t.id,t])),erMap=new Map(errs.map(e=>[e.id,e]));
     // 1) ce qui est plus récent à distance
     const need=[];
@@ -644,6 +646,8 @@ async function syncNow(silent){
       await DB.putRaw(store,d);changed=true;
     }
     tds=await DB.all('tds');
+    for(const t of tds) if(t.pages?.length&&!t.pagesStamp){t.pagesStamp=t.updated||Date.now();await DB.putRaw('tds',t)}
+    tds=await DB.all('tds');
     const needPg=tds.filter(t=>{const r=remote.get('pg:'+t.id);return r&&!r.deleted&&(!t.pages?.length||r.updated>(t.pagesStamp||0))&&r.updated>(tomb['pg:'+t.id]||0)}).map(t=>'pg:'+t.id);
     for(const r of await RB.fetch(needPg)){
       const t=tds.find(x=>'pg:'+x.id===r.id);
@@ -654,10 +658,10 @@ async function syncNow(silent){
     const up=[],ru=id=>remote.get(id)?.updated||0;
     for(const t of tds){
       const {pages,...data}=t;
-      if((t.updated||0)>ru('td:'+t.id)) up.push({id:'td:'+t.id,kind:'td',data,updated:t.updated,deleted:false});
-      if(pages?.length&&(t.pagesStamp||0)>ru('pg:'+t.id)) up.push({id:'pg:'+t.id,kind:'pg',data:{pages},updated:t.pagesStamp,deleted:false});
+      if(!remote.has('td:'+t.id)||(t.updated||0)>ru('td:'+t.id)) up.push({id:'td:'+t.id,kind:'td',data,updated:t.updated,deleted:false});
+      if(pages?.length&&(!remote.has('pg:'+t.id)||(t.pagesStamp||0)>ru('pg:'+t.id))) up.push({id:'pg:'+t.id,kind:'pg',data:{pages},updated:t.pagesStamp,deleted:false});
     }
-    for(const e of errs) if((e.updated||0)>ru('er:'+e.id)) up.push({id:'er:'+e.id,kind:'er',data:e,updated:e.updated,deleted:false});
+    for(const e of errs) if(!remote.has('er:'+e.id)||(e.updated||0)>ru('er:'+e.id)) up.push({id:'er:'+e.id,kind:'er',data:e,updated:e.updated,deleted:false});
     for(const [id,tm] of Object.entries(tomb)) if(remote.has(id)&&tm>ru(id)) up.push({id,kind:id.slice(0,2),data:null,updated:tm,deleted:true});
     if(up.length) await RB.upsert(up.map(r=>({user_id:user.id,...r})));
     if(changed){
@@ -665,7 +669,7 @@ async function syncNow(silent){
       if(st.tdId&&!curTd()){st.tdId=null;st.view='home'}
       if(st.tdId&&!curExo()) st.exoId=curTd().exos[0]?.id;
     }
-    st.sync='Synchronisé à '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})+(up.length?` · ${up.length} envoyé(s)`:'')+(changed?' · mises à jour reçues':'');
+    st.sync='Synchronisé à '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})+` · ${up.length} envoyé(s)`+(changed?' · mises à jour reçues':'')+` · ${tds.length} TD en local`;
     if(changed&&!st.busy&&!document.activeElement?.matches?.('textarea,input,select')) render();
   }catch(e){
     st.sync='Erreur de synchro : '+(e.message||e);
