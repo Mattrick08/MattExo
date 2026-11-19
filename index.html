@@ -167,7 +167,9 @@ async function callAI(messages){
     headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
     body:JSON.stringify({model:s.model,...extra,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
   captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
-  return d.choices[0].message.content;
+  const ch=d.choices?.[0];
+  if(ch?.finish_reason==='length') throw new Error("Réponse coupée (trop longue pour le modèle ou la limite). Mets l'effort de raisonnement sur « medium », ou génère une variante à la fois.");
+  return ch?.message?.content||'';
 }
 
 const SYS=`Tu es un professeur de CPGE (mathématiques et physique-chimie), rigoureux et pédagogue.
@@ -246,14 +248,27 @@ Format STRICT :
 ===ERREURS===
 (une ligne par erreur : Type | description courte ; Type parmi Calcul, Méthode, Cours, Étourderie, Rédaction, Autre ; écrire « Aucune » s'il n'y en a pas)`;
 
+const NORM=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/[^A-Z_ ]/g,'').trim().replace(/\s+/g,'_');
 function parseSections(t){
-  const out={};const ms=[...t.matchAll(/^===\s*([A-Z_]+)\s*===\s*$/gm)];
-  ms.forEach((m,i)=>{out[m[1]]=t.slice(m.index+m[0].length,i+1<ms.length?ms[i+1].index:undefined).trim()});
+  t=String(t||'').replace(/```[a-z]*\n?/gi,'');
+  const out={};
+  const ms=[...t.matchAll(/^[ \t>#*_-]*={2,}[ \t]*([^=\n]{2,30}?)[ \t]*={2,}[ \t*_]*$/gm)];
+  ms.forEach((m,i)=>{out[NORM(m[1])]=t.slice(m.index+m[0].length,i+1<ms.length?ms[i+1].index:undefined).trim()});
   return out;
 }
+const sec=(S,l)=>{const u=l.toUpperCase(),k=Object.keys(S).find(k=>k===u||k.startsWith(u)||k.endsWith('_'+u));return k?S[k]:undefined};
 function parseVar(b){
-  const g=k=>{const m=b.match(new RegExp('<<'+k+'>>([\\s\\S]*?)(?=<<[A-Z]+>>|$)'));return m?m[1].trim():''};
-  return {enonce:g('ENONCE'),correction:g('CORRECTION')};
+  const ms=[...b.matchAll(/<{1,3}\s*(ÉNONCÉ|ÉNONCE|ENONCÉ|ENONCE|CORRECTION)\s*>{1,3}/gi)];
+  const o={enonce:'',correction:''};
+  ms.forEach((m,i)=>{
+    const body=b.slice(m.index+m[0].length,i+1<ms.length?ms[i+1].index:undefined).trim().replace(/^\*{2}\s*/,'').replace(/\s*\*{2}$/,'').trim();
+    if(/^c/i.test(m[1])) o.correction=body; else o.enonce=body;
+  });
+  if(!ms.length){ // repli : titres « Énoncé » / « Correction » en Markdown
+    const m=b.match(/\n[ \t#*_]*correction[^\n]*\n/i);
+    if(m){o.enonce=b.slice(0,m.index).replace(/^[ \t#*_]*[ée]nonc[ée][^\n]*\n/i,'').trim();o.correction=b.slice(m.index+m[0].length).trim()}
+  }
+  return o;
 }
 
 /* ---------- PDF ---------- */
@@ -456,7 +471,7 @@ const A={
       let verified=null;
       if(settings().verify){
         const S0=parseSections(raw0);
-        const enonces=levels.filter(l=>S0[l.toUpperCase()]).map(l=>`### ${LV[l]}\n`+parseVar(S0[l.toUpperCase()]).enonce).join('\n\n');
+        const enonces=levels.filter(l=>sec(S0,l)).map(l=>`### ${LV[l]}\n`+parseVar(sec(S0,l)).enonce).join('\n\n');
         if(enonces){
           st.busy='Résolution indépendante…';render();
           const blind=await callAI([{role:'system',content:SYS},{role:'user',content:blindPrompt(enonces)}]);
@@ -469,17 +484,17 @@ const A={
       if(S0.ORIGINAL) ex.clean=S0.ORIGINAL;
       if(S0.RAISONNEMENT) ex.reasoning=S0.RAISONNEMENT;
       ex.notes='';
-      for(const l of levels){const b=S0[l.toUpperCase()];if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
+      for(const l of levels){const b=sec(S0,l);if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
       if(n&&verified){
         const SV=parseSections(verified);
         for(const l of levels){
-          const b=SV[l.toUpperCase()];if(!b||/^\s*OK\b/i.test(b)) continue;
+          const b=sec(SV,l);if(!b||/^\s*OK\b/i.test(b)) continue;
           const p=parseVar(b),old=ex.variants[l];
           if(p.enonce&&p.correction&&old&&p.correction.length>=0.5*old.correction.length) ex.variants[l]=p;
         }
         ex.notes=SV.NOTES||'';
       }
-      if(!n) throw new Error('Réponse illisible, réessaie.');
+      if(!n) throw new Error('Réponse illisible. Début reçu : '+JSON.stringify((raw0||'(vide)').slice(0,300)));
       await saveTd(td);if(d.lv!=='all')st.tab=d.lv;else st.tab='facile';
     });
   },
