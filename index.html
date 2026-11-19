@@ -13,8 +13,10 @@
 <title>MattExo</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#0f1115;--card:#171a21;--card2:#1e222b;--line:#2a2f3a;--tx:#e8eaf0;--mut:#8b93a5;--ac:#ff7a3d;--ok:#3ecf8e;--ko:#ff5d5d;--r:12px}
 *{box-sizing:border-box}
@@ -51,6 +53,8 @@ main{padding:18px;max-width:1500px;margin:auto}
 .err-item.res{border-color:var(--ok);opacity:.65}
 .sticky{position:sticky;top:64px}
 .q{border-left:3px solid var(--ac);padding-left:10px;margin:8px 0}
+.pg{max-width:100%;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block;background:#fff}
+pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;font-size:12px;overflow-x:auto}
 </style>
 </head>
 <body>
@@ -60,6 +64,7 @@ main{padding:18px;max-width:1500px;margin:auto}
     <button data-act="home">TD</button>
     <button data-act="carnet">Carnet d'erreurs</button>
     <button data-act="settings">Réglages</button>
+    <button id="syncbtn" data-act="sync" hidden title="Synchroniser">⟳</button>
   </nav>
 </header>
 <main id="app"></main>
@@ -79,6 +84,10 @@ const LV={facile:'Plus facile',moyen:'Même niveau',difficile:'Plus difficile'};
 const TAGS=['Calcul','Méthode','Cours','Étourderie','Rédaction','Autre'];
 const fmtDate=t=>new Date(t).toLocaleDateString('fr-FR',{day:'2-digit',month:'short'});
 
+/* ---------- suppressions à propager (synchro) ---------- */
+const getTomb=()=>{try{return JSON.parse(localStorage.getItem('mattexo.tomb')||'{}')}catch{return {}}};
+const addTomb=ids=>{const t=getTomb(),n=Date.now();ids.forEach(i=>t[i]=n);try{localStorage.setItem('mattexo.tomb',JSON.stringify(t))}catch{}};
+
 /* ---------- IndexedDB ---------- */
 const DB={db:null,
   open(){return new Promise((ok,ko)=>{const r=indexedDB.open('mattexo',1);
@@ -86,22 +95,25 @@ const DB={db:null,
     r.onsuccess=()=>{this.db=r.result;ok()};r.onerror=()=>ko(r.error)})},
   tx(s,m,f){return new Promise((ok,ko)=>{const t=this.db.transaction(s,m);const q=f(t.objectStore(s));t.oncomplete=()=>ok(q&&q.result);t.onerror=()=>ko(t.error)})},
   all(s){return this.tx(s,'readonly',o=>o.getAll())},
-  put(s,v){return this.tx(s,'readwrite',o=>o.put(v))},
-  del(s,k){return this.tx(s,'readwrite',o=>o.delete(k))},
+  put(s,v){v.updated=Date.now();return this.tx(s,'readwrite',o=>o.put(v)).then(r=>{scheduleSync();return r})},
+  putRaw(s,v){return this.tx(s,'readwrite',o=>o.put(v))},
+  del(s,k){addTomb(s==='tds'?['td:'+k,'pg:'+k]:['er:'+k]);return this.tx(s,'readwrite',o=>o.delete(k)).then(r=>{scheduleSync();return r})},
+  delRaw(s,k){return this.tx(s,'readwrite',o=>o.delete(k))},
   clear(s){return this.tx(s,'readwrite',o=>o.clear())}
 };
 
 /* ---------- settings ---------- */
-const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true,effort:'',temp:''};
+const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true,effort:'',temp:'',vprov:'openai',vbase:'',vmodel:'',vkey:'',sbUrl:'',sbKey:''};
 const settings=()=>{try{return {...DEF,...JSON.parse(localStorage.getItem('mattexo.settings')||'{}')}}catch{return {...DEF}}};
 
 /* ---------- IA ---------- */
 function toParts(m,prov){
-  if(!m.img) return m.content;
-  const b=m.img.split(',')[1];
-  return prov==='anthropic'
-    ?[{type:'image',source:{type:'base64',media_type:'image/jpeg',data:b}},{type:'text',text:m.content}]
-    :[{type:'image_url',image_url:{url:m.img}},{type:'text',text:m.content}];
+  const imgs=m.imgs||(m.img?[m.img]:[]);
+  if(!imgs.length) return m.content;
+  const ims=imgs.map(u=>prov==='anthropic'
+    ?{type:'image',source:{type:'base64',media_type:'image/jpeg',data:u.split(',')[1]}}
+    :{type:'image_url',image_url:{url:u}});
+  return [...ims,{type:'text',text:m.content}];
 }
 function imgData(file){return new Promise((ok,ko)=>{const im=new Image();im.onload=()=>{
   const k=Math.min(1,1600/Math.max(im.width,im.height)),c=document.createElement('canvas');
@@ -148,8 +160,14 @@ async function post(url,init){
     st.busy=prev;render();
   }
 }
+// utilise le « modèle vision » (s'il est configuré) dès qu'un message contient une image
 async function callAI(messages){
-  const s=settings();
+  const s0=settings(),hasImg=messages.some(m=>m.img||m.imgs),useV=hasImg&&s0.vkey&&s0.vmodel;
+  const s=useV?{...s0,provider:s0.vprov,base:s0.vbase||s0.base,model:s0.vmodel,key:s0.vkey,effort:'',temp:''}:s0;
+  try{return await callAI0(messages,s)}
+  catch(e){if(hasImg&&!useV) e.message+=" — ce modèle ne lit peut-être pas les images : renseigne un « Modèle vision » dans Réglages.";throw e}
+}
+async function callAI0(messages,s){
   if(!s.key) throw new Error('Ajoute ta clé API dans Réglages.');
   const extra={};
   if(s.temp!==''&&!isNaN(parseFloat(s.temp))) extra.temperature=parseFloat(s.temp);
@@ -175,30 +193,41 @@ async function callAI(messages){
 const SYS=`Tu es un professeur de CPGE (mathématiques et physique-chimie), rigoureux et pédagogue.
 Tu écris en français. TOUT ce qui est mathématique ou scientifique est écrit en LaTeX, même les expressions simples : variables ($x$), puissances ($x^2$), fractions ($\\frac{a}{b}$), indices, vecteurs, ensembles, sommes, intégrales, limites, et grandeurs physiques avec unités ($v = 3\\,\\mathrm{m\\cdot s^{-1}}$).
 Délimiteurs obligatoires : $...$ en ligne et $$...$$ en display (jamais \\( \\) ni \\[ \\]). N'écris jamais de symboles mathématiques Unicode (√, ², ≤, ∫, π, ∞…) ni de notation textuelle du type x^2 ou a/b en dehors de LaTeX.
-Pas de blocs de code, pas de tableaux Markdown, pas de HTML. Le texte courant reste en phrases normales ; les listes utilisent « - ».
+Les formules chimiques s'écrivent avec \\ce{...} à l'intérieur de $...$ (ex. $\\ce{2H2 + O2 -> 2H2O}$). Pas de blocs de code, pas de tableaux Markdown, pas de HTML. Le texte courant reste en phrases normales ; les listes utilisent « - ».
 Tu ne fournis jamais une correction que tu n'as pas vérifiée étape par étape (calculs, signes, conditions d'application des théorèmes, homogénéité en physique).`;
 
+const SUBJ={
+  physique:"\nMatière : PHYSIQUE. Précise le système, le référentiel et les hypothèses ou approximations. Vérifie l'homogénéité de chaque résultat, donne les applications numériques avec unités et un nombre cohérent de chiffres significatifs, puis commente l'ordre de grandeur.",
+  chimie:"\nMatière : CHIMIE. Équations-bilan équilibrées avec états physiques, formules avec \\ce{...}, tableaux d'avancement décrits ligne par ligne, unités et chiffres significatifs, conventions de signe des grandeurs thermodynamiques."};
+const sys=()=>SYS+(SUBJ[curTd()?.subject]||'');
 function genPrompt(ex,levels){
   const defs={
     facile:'FACILE : même raisonnement/technique centrale, mais plus guidé — valeurs ou fonctions plus simples, moins d\'étapes de calcul, éventuellement une question intermédiaire donnée.',
     moyen:'MOYEN : même difficulté et même raisonnement que l\'original, mais objets, valeurs et contexte réellement différents (pas un simple renommage de lettres).',
     difficile:'DIFFICILE : même raisonnement de base, avec une étape supplémentaire (généralisation, cas limite, piège classique ou calcul plus lourd).'};
-  return `Voici l'énoncé d'un exercice de TD, extrait d'un PDF (des symboles peuvent être mal reconnus : reconstitue-les).
+  const clean=(ex.clean||'').trim(),raw=(ex.text||'').trim();
+  const body=clean
+    ?`<<<ENONCE_RECONSTITUE${ex.trusted?' (relu et validé par l\'élève : il fait foi)':''}
+${clean}
+ENONCE_RECONSTITUE>>>${raw&&!ex.trusted?`
 
-<<<ENONCE_BRUT
-${ex.text}
-ENONCE_BRUT>>>
+<<<TEXTE_BRUT_PDF (peut contenir des erreurs : exposants, indices, numérateurs et dénominateurs souvent inversés)
+${raw}
+TEXTE_BRUT_PDF>>>`:''}`
+    :`<<<TEXTE_BRUT_PDF (extrait d'un PDF : les exposants, indices, numérateurs et dénominateurs sont souvent inversés ou mal placés ; reconstitue-les avec prudence en vérifiant la cohérence mathématique ou physique)
+${raw}
+TEXTE_BRUT_PDF>>>`;
+  return `Voici l'énoncé d'un exercice de TD.
 
-Produis :
-1. L'énoncé original proprement réécrit en LaTeX.
-2. Le raisonnement commun : la méthode/idées clés à maîtriser (court).
-3. Les variantes demandées : ${levels.map(l=>defs[l]).join(' ')}
+${body}
+
+Produis ${clean?'':"l'énoncé original proprement réécrit en LaTeX, puis "}le raisonnement commun (méthode et idées clés, court) et les variantes demandées :
+${levels.map(l=>'- '+defs[l]).join('\n')}
 Chaque variante doit être autonome, non ambiguë, résoluble, avec une correction détaillée rédigée comme en prépa (étapes numérotées, résultat final clairement indiqué, vérification de cohérence).
+Si l'énoncé comporte un schéma, une figure, un graphe, un circuit ou un montage, chaque variante doit le décrire précisément en texte (éléments, positions, orientations, valeurs, axes, points remarquables) dans une ligne « Schéma : … » : les figures ne peuvent pas être dessinées, et l'énoncé doit rester résoluble sans les voir.
 
 Format STRICT (ne rien écrire hors de ces balises) :
-===ORIGINAL===
-(énoncé propre)
-===RAISONNEMENT===
+${clean?'':'===ORIGINAL===\n(énoncé propre)\n'}===RAISONNEMENT===
 (méthode commune)
 ${levels.map(l=>`===${l.toUpperCase()}===
 <<ENONCE>>
@@ -206,6 +235,13 @@ ${levels.map(l=>`===${l.toUpperCase()}===
 <<CORRECTION>>
 (correction détaillée)`).join('\n')}`;
 }
+const imgPrompt=(ex,n)=>`Voici ${n>1?n+' images (pages) d\'un TD':'une image (page) d\'un TD'}. Transcris UNIQUEMENT l'exercice « ${ex.label} », fidèlement, en LaTeX : exposants, indices, fractions (numérateur / dénominateur dans le bon ordre), racines, intégrales, unités, formules chimiques avec \\ce{...}.
+Si l'exercice contient un schéma, une figure, un graphe, un circuit ou un montage, ajoute à la fin un bloc « Schéma : » qui le décrit précisément et complètement en français (éléments, positions, orientations, valeurs et grandeurs notées, légendes, axes, courbes et points remarquables, sens des flèches), de façon à pouvoir résoudre l'exercice sans voir la figure.
+Le texte extrait automatiquement du PDF, ci-dessous, n'est qu'une aide : il contient souvent des erreurs d'exposants, d'indices et de fractions. En cas de doute, l'image fait foi.
+<<<TEXTE_EXTRAIT
+${ex.text||'(aucun)'}
+TEXTE_EXTRAIT>>>
+Ne résous rien, n'ajoute rien d'autre. Renvoie uniquement l'énoncé.`;
 const blindPrompt=enonces=>`Résous complètement et rigoureusement chacun de ces exercices, indépendamment les uns des autres, avec les calculs détaillés et le résultat final. Vérifie chaque résultat (substitution, cas particulier, ordre de grandeur, homogénéité). Si un énoncé est ambigu ou impossible, signale-le.
 
 ${enonces}`;
@@ -272,28 +308,114 @@ function parseVar(b){
 }
 
 /* ---------- PDF ---------- */
-async function extractPdf(file){
-  pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
-  let out='';
-  for(let p=1;p<=pdf.numPages;p++){
-    const tc=await (await pdf.getPage(p)).getTextContent();
-    let y=null,line='';
-    for(const it of tc.items){
-      const ny=it.transform[5];
-      if(y!==null&&Math.abs(ny-y)>3){out+=line.trim()+'\n';line=''}
-      line+=it.str+' ';y=ny;
-    }
-    out+=line.trim()+'\n';
+/* Reconstruit le texte d'une page PDF en gardant exposants, indices et fractions (notation LaTeX). */
+function layoutPage(raw){
+  const items=raw.filter(it=>it.str!=='').map(it=>({s:it.str.replace(/−/g,'-'),x:it.transform[4],y:it.transform[5],
+    size:Math.hypot(it.transform[0],it.transform[1])||it.height||10,w:it.width||0}));
+  if(!items.length) return '';
+  const wmed=list=>{const a=[];list.forEach(i=>{for(let k=0;k<Math.min(i.s.trim().length,20);k++)a.push(i.size)});
+    a.sort((p,q)=>p-q);return a[Math.floor(a.length/2)]||(list[0]?list[0].size:10)};
+  const base=wmed(items);
+  const main=items.filter(i=>i.size>=0.85*base).sort((a,b)=>b.y-a.y);
+  const lines=[];
+  for(const it of main){const L=lines[lines.length-1];
+    if(L&&Math.abs(it.y-L.y)<=0.45*base) L.items.push(it); else lines.push({y:it.y,items:[it]});}
+  for(const it of items.filter(i=>i.size<0.85*base)){
+    let best=null,bd=1e9;
+    for(const L of lines){const d=Math.abs(it.y-L.y);if(d<bd){bd=d;best=L}}
+    if(best&&bd<=1.3*base) best.items.push(it); else lines.push({y:it.y,items:[it]});
+  }
+  lines.sort((a,b)=>b.y-a.y);
+  let out='',prevY=null;
+  for(const L of lines){
+    const t=layout(L.items,base).trim();if(!t) continue;
+    if(prevY!==null&&prevY-L.y>2.2*base) out+='\n';
+    out+=t+'\n';prevY=L.y;
   }
   return out;
 }
-function splitExos(text){
+function layout(items,base){
+  items=items.slice().sort((a,b)=>a.x-b.x);
+  const txt=items.filter(i=>i.s.trim());
+  if(!txt.length) return items.map(i=>i.s).join('');
+  const ys=txt.filter(i=>Math.abs(i.size-base)<=0.1*base).map(i=>i.y).sort((p,q)=>p-q);
+  const lineY=ys[Math.floor(ys.length/2)]??txt[0].y;
+  const mainI=items.filter(i=>i.size>=0.85*base),small=items.filter(i=>i.size<0.85*base);
+  // regroupe les petits éléments en blocs (exposant, indice, numérateur, dénominateur)
+  const cl=[];
+  for(const it of small){
+    let best=null,bd=1e9;
+    for(const c of cl){const gap=it.x-c.x1,dy=Math.abs(it.y-c.y);
+      if(gap<=0.6*it.size&&dy<=0.6*c.size&&dy<bd){bd=dy;best=c}}
+    if(best){best.items.push(it);best.x1=Math.max(best.x1,it.x+it.w);
+      if(it.size>=0.95*best.size){best.y=it.y;best.size=Math.max(best.size,it.size)}}
+    else cl.push({items:[it],x0:it.x,x1:it.x+it.w,y:it.y,size:it.size});
+  }
+  cl.forEach(c=>{c.r=(c.y-lineY)/base});
+  // fractions : un bloc au-dessus + un bloc en dessous, centrés l'un sur l'autre (sauf bornes de Σ, ∫…)
+  const used=new Set(),fr=[];
+  for(const d of cl.filter(c=>c.r<-0.3)){
+    let best=null,bs=0;
+    for(const n of cl.filter(c=>c.r>0.15&&!used.has(c))){
+      const ov=Math.min(n.x1,d.x1)-Math.max(n.x0,d.x0),mw=Math.min(n.x1-n.x0,d.x1-d.x0);
+      const cd=Math.abs((n.x0+n.x1)/2-(d.x0+d.x1)/2),xw=Math.max(n.x1-n.x0,d.x1-d.x0);
+      if(mw>0&&ov>=0.6*mw&&cd<=0.35*xw&&n.y>d.y&&ov>bs){best=n;bs=ov}
+    }
+    if(!best) continue;
+    const cx=(Math.min(best.x0,d.x0)+Math.max(best.x1,d.x1))/2;
+    if(mainI.some(m=>m.s.trim()&&cx>m.x+0.2*m.w&&cx<m.x+0.8*m.w)) continue;
+    used.add(best);used.add(d);fr.push({n:best,d});
+  }
+  const att=new Map();
+  for(const c of cl){
+    if(used.has(c)||(c.r<=0.15&&c.r>=-0.1)) continue;
+    const cx=(c.x0+c.x1)/2,m=mainI.find(m=>m.s.trim()&&cx>m.x+0.2*m.w&&cx<m.x+0.8*m.w);
+    if(m){(att.get(m)||att.set(m,[]).get(m)).push(c);used.add(c)}
+  }
+  const wrap=c=>{const t=layout(c.items,c.size).trim(),sp=/\s$/.test(c.items.map(i=>i.s).join(''))?' ':'';
+    return (c.r>0.15?'^{'+t+'}':c.r<-0.1?'_{'+t+'}':t)+sp};
+  const segs=[];
+  for(const m of mainI){
+    const at=(att.get(m)||[]).sort((p,q)=>q.r-p.r);
+    segs.push({x:m.x,x1:m.x+m.w,t:m.s+at.map(wrap).join(''),main:true});
+  }
+  for(const c of cl) if(!used.has(c)) segs.push({x:c.x0,x1:c.x1,t:wrap(c)});
+  for(const f of fr) segs.push({x:Math.min(f.n.x0,f.d.x0),x1:Math.max(f.n.x1,f.d.x1),
+    t:' \\frac{'+layout(f.n.items,f.n.size).trim()+'}{'+layout(f.d.items,f.d.size).trim()+'} '});
+  segs.sort((p,q)=>p.x-q.x);
+  let o='',prev=null;
+  for(const s of segs){
+    if(prev&&s.x-prev.x1>0.2*base&&!/\s$/.test(o)&&!/^\s/.test(s.t)) o+=' ';
+    o+=s.t;prev=s;
+  }
+  return o.replace(/\s+\}/g,'}').replace(/\{\s+/g,'{').replace(/[ \t]{2,}/g,' ');
+}
+
+async function extractPdf(file){
+  pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
+  let text='';const starts=[],pages=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    st.busy=`Lecture de la page ${p}/${pdf.numPages}…`;render();
+    const page=await pdf.getPage(p);
+    starts.push(text.length);
+    text+=layoutPage((await page.getTextContent()).items)+'\n';
+    // image de la page : sert à vérifier l'extraction et à lire les schémas avec un modèle vision
+    const w=page.getViewport({scale:1}).width,vp=page.getViewport({scale:Math.min(2,1000/w)});
+    const c=document.createElement('canvas');c.width=vp.width;c.height=vp.height;
+    await page.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+    pages.push(c.toDataURL('image/jpeg',.6));
+  }
+  return {text,starts,pages};
+}
+function splitExos(text,starts=[0]){
+  const pg=pos=>{let p=0;starts.forEach((s,i)=>{if(s<=pos)p=i});return p};
+  const mk=(chunk,s,e,label)=>({id:uid(),label,text:chunk,variants:{},pageFrom:pg(s),pageTo:pg(Math.max(s,e-1))});
   const idx=[...text.matchAll(/^[ \t]*(?:exercice|exo|probl[eè]me)\s*\d+.*$/gim)].map(m=>m.index);
-  if(!idx.length) return [{id:uid(),label:'Exercice 1',text:text.trim(),variants:{}}];
+  if(!idx.length) return [mk(text.trim(),0,text.length,'Exercice 1')];
   return idx.map((s,i)=>{
-    const chunk=text.slice(s,idx[i+1]).trim();
-    return {id:uid(),label:chunk.split('\n')[0].slice(0,40),text:chunk,variants:{}};
+    const e=idx[i+1]??text.length,chunk=text.slice(s,e).trim();
+    return mk(chunk,s,e,chunk.split('\n')[0].slice(0,40));
   });
 }
 
@@ -308,6 +430,7 @@ const saveTd=td=>DB.put('tds',td);
 function render(){
   const a=$('#app');
   a.innerHTML=({home:vHome,td:vTd,carnet:vCarnet,settings:vSettings})[st.view]()+limFoot();
+  const sb=$('#syncbtn');if(sb) sb.hidden=!settings().sbUrl;
   math();
 }
 function math(){
@@ -322,6 +445,7 @@ function vHome(){
   return `${banner()}
   <div class="card"><b>Nouveau TD</b>
     <label>Titre</label><input id="n-title" placeholder="TD 5 — Intégrales">
+    <label>Matière</label><select id="n-subj"><option value="">Automatique</option><option value="maths">Maths</option><option value="physique">Physique</option><option value="chimie">Chimie</option></select>
     <label>PDF du TD</label><input id="n-pdf" type="file" accept="application/pdf">
     <label>… ou colle le texte du TD</label><textarea id="n-text" placeholder="Exercice 1 ..."></textarea>
     <p><button class="p" data-act="import" ${st.busy?'disabled':''}>Importer</button>
@@ -329,7 +453,7 @@ function vHome(){
   </div>
   <h3>Mes TD</h3>
   ${st.tds.length?st.tds.sort((a,b)=>b.created-a.created).map(t=>`
-    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.exos.length} exo(s) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s)</div></div>
+    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.subject?esc(t.subject)+' · ':''}${t.exos.length} exo(s) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s)</div></div>
     <button data-act="open-td" data-id="${t.id}">Ouvrir</button><button class="d" data-act="del-td" data-id="${t.id}">✕</button></div>`).join(''):'<p class="mut">Aucun TD pour l\'instant.</p>'}`;
 }
 
@@ -341,6 +465,7 @@ function vTd(){
   if(ex){
     const tabs=[['orig','Original'],...Object.entries(LV)];
     main=`<div class="card"><div class="row"><b style="flex:1">${esc(td.title)} — ${esc(ex.label)}</b>
+      <select id="td-subj" style="width:auto">${[['','Auto'],['maths','Maths'],['physique','Physique'],['chimie','Chimie']].map(([k,l])=>`<option value="${k}" ${(td.subject||'')===k?'selected':''}>${l}</option>`).join('')}</select>
       <button class="p" data-act="gen" data-lv="all" ${st.busy?'disabled':''}>${ex.variants.moyen?'Regénérer les 3 variantes':'Générer les 3 variantes'}</button></div>
       <div class="tabs" style="margin-top:12px">${tabs.map(([k,l])=>`<button class="${st.tab===k?'on':''}" data-act="tab" data-k="${k}">${l}${k!=='orig'&&ex.variants[k]?' ✓':''}</button>`).join('')}</div>
       ${st.tab==='orig'?vOrig(ex):vVariant(ex,st.tab)}</div>`;
@@ -348,13 +473,27 @@ function vTd(){
   return `${banner()}<div class="row" style="margin-bottom:10px"><button data-act="home">← TD</button></div>
     <div class="grid">${left}<div>${main}</div><div class="sticky">${ex?vErrPanel(td,ex):''}</div></div>`;
 }
+function exoImgs(td,ex){
+  if(ex.imgs?.length) return ex.imgs;
+  if(td.pages?.length&&ex.pageFrom!=null){const a=ex.pageFrom;return td.pages.slice(a,Math.min(ex.pageTo??a,a+2)+1)}
+  return [];
+}
 function vOrig(ex){
-  return `${ex.clean?`<div class="txt">${fmt(ex.clean)}</div>`:''}
+  const td=curTd(),im=exoImgs(td,ex),b=st.busy?'disabled':'';
+  return `${st.showImgs?`<div>${im.map(u=>`<img class="pg" src="${u}">`).join('')||'<p class="mut">Aucune image pour cet exo (texte collé ?). Ajoute une capture avec « + Image ».</p>'}</div>`:''}
+    ${ex.clean?`<div class="txt">${fmt(ex.clean)}</div>`:''}
     ${ex.reasoning?`<div class="card"><b>Raisonnement commun</b><div>${fmt(ex.reasoning)}</div></div>`:''}
     ${ex.notes&&!/^RAS/i.test(ex.notes)?`<div class="mut">Vérification IA : ${fmt(ex.notes)}</div>`:''}
     <label>Libellé</label><input id="x-label" value="${esc(ex.label)}">
-    <label>Texte brut (modifiable)</label><textarea id="x-text" style="min-height:140px">${esc(ex.text)}</textarea>
-    <p class="row"><button data-act="save-exo">Enregistrer</button><button data-act="clean" ${st.busy?'disabled':''}>Mettre l'énoncé en LaTeX</button><button class="d" data-act="del-exo">Supprimer l'exo</button></p>
+    <label>Énoncé propre (LaTeX), modifiable${ex.trusted?' · ✓ validé':' · à vérifier'}</label>
+    <textarea id="x-clean" style="min-height:110px" placeholder="Clique sur « Lire avec l'image » ou « Mettre en LaTeX », ou écris-le toi-même">${esc(ex.clean||'')}</textarea>
+    <label>Texte brut extrait du PDF (peut contenir des erreurs d'exposants / fractions)</label>
+    <textarea id="x-text" style="min-height:110px">${esc(ex.text)}</textarea>
+    <p class="row"><button data-act="save-exo">Enregistrer</button><button data-act="validate">✓ Valider l'énoncé</button>
+      <button data-act="show-imgs" class="${st.showImgs?'on':''}">${st.showImgs?'Masquer':'Voir'} le PDF / les images</button></p>
+    <p class="row"><button data-act="clean-img" ${b}>Lire avec l'image (schémas)</button><button data-act="clean" ${b}>Mettre en LaTeX (texte seul)</button>
+      <label class="btn" style="margin:0">+ Image<input id="x-img" type="file" accept="image/*" hidden></label>${ex.imgs?.length?`<button data-act="del-imgs">Retirer mes ${ex.imgs.length} image(s)</button>`:''}
+      <button class="d" data-act="del-exo">Supprimer l'exo</button></p>
     ${vMine(ex,'orig')}`;
 }
 function vVariant(ex,k){
@@ -403,7 +542,7 @@ function errItem(e,withLink){
 function vCarnet(){
   const f=st.ferr;
   const list=st.errs.filter(e=>(!f.tag||e.tag===f.tag)&&(f.res==='all'||(f.res==='open')===!e.resolved)&&(!f.q||(e.text+e.fix).toLowerCase().includes(f.q.toLowerCase()))).sort((a,b)=>b.created-a.created);
-  return `<h3>Carnet d'erreurs</h3><div class="card row">
+  return `${banner()}<h3>Carnet d'erreurs</h3><div class="card row">
     <select id="c-tag" style="width:auto"><option value="">Tous types</option>${TAGS.map(t=>`<option ${f.tag===t?'selected':''}>${t}</option>`).join('')}</select>
     <select id="c-res" style="width:auto"><option value="open" ${f.res==='open'?'selected':''}>À retenir</option><option value="done" ${f.res==='done'?'selected':''}>Maîtrisées</option><option value="all" ${f.res==='all'?'selected':''}>Toutes</option></select>
     <input id="c-q" style="flex:1;min-width:150px" placeholder="Rechercher…" value="${esc(f.q)}"></div>
@@ -411,7 +550,7 @@ function vCarnet(){
 }
 function vSettings(){
   const s=settings();
-  return `<h3>Réglages</h3><div class="card">
+  return `${banner()}<h3>Réglages</h3><div class="card">
     <div class="banner busy">Un abonnement ChatGPT Plus n'inclut pas l'API : il faut une clé API (platform.openai.com), facturée à l'usage. La clé reste dans ton navigateur (localStorage) et n'est envoyée qu'au fournisseur choisi.</div>
     <label>Fournisseur</label><select id="s-prov"><option value="openai" ${s.provider==='openai'?'selected':''}>OpenAI (ou compatible)</option><option value="anthropic" ${s.provider==='anthropic'?'selected':''}>Anthropic</option></select>
     <label>URL de base (OpenAI-compatible)</label><input id="s-base" value="${esc(s.base)}">
@@ -421,11 +560,117 @@ function vSettings(){
     <select id="s-eff">${['','low','medium','high'].map(x=>`<option value="${x}" ${s.effort===x?'selected':''}>${x||'défaut'}</option>`).join('')}</select>
     <label>Température (vide = défaut ; 0.2 limite les erreurs)</label><input id="s-temp" value="${esc(s.temp)}" placeholder="0.2">
     <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Vérification indépendante (3 appels : l'IA résout à part, compare puis corrige ; bien plus fiable, plus lent)</label>
-    <p class="row"><button class="p" data-act="save-set">Enregistrer</button><button data-act="preset-groq">Préréglage Groq</button><button data-act="preset-gemini">Préréglage Gemini</button></p></div>
+    <hr style="border-color:var(--line)"><b>Modèle vision (schémas, photos de copie)</b>
+    <p class="mut">Optionnel. Utilisé automatiquement dès qu'une image est envoyée. Laisse vide si ton modèle principal lit déjà les images (GPT-4.1, Gemini, Claude…). Groq (gpt-oss) ne lit pas les images : renseigne ici un modèle qui les lit.</p>
+    <label>Fournisseur vision</label><select id="s-vprov"><option value="openai" ${s.vprov==='openai'?'selected':''}>OpenAI (ou compatible)</option><option value="anthropic" ${s.vprov==='anthropic'?'selected':''}>Anthropic</option></select>
+    <label>URL de base vision</label><input id="s-vbase" value="${esc(s.vbase)}" placeholder="https://api.openai.com/v1">
+    <label>Modèle vision</label><input id="s-vmodel" value="${esc(s.vmodel)}" placeholder="gpt-4.1">
+    <label>Clé API vision</label><input id="s-vkey" type="password" value="${esc(s.vkey)}">
+    <p class="row"><button class="p" data-act="save-set">Enregistrer</button><button data-act="preset-groq">Préréglage Groq</button><button data-act="preset-gemini">Préréglage Gemini</button>
+      <button data-act="preset-vgemini">Vision : Gemini</button><button data-act="preset-vopenai">Vision : OpenAI</button></p></div>
+  <div class="card"><b>Synchronisation entre appareils (Supabase)</b>
+    <p class="mut">Gratuit. 1) Crée un projet sur supabase.com. 2) Exécute le SQL ci-dessous dans « SQL Editor ». 3) Colle l'URL du projet et la clé « anon public » (Project Settings → API). 4) Crée un compte ici, puis refais les étapes 3 et 4 sur chaque appareil. Tes clés d'API IA ne sont jamais synchronisées.</p>
+    <details><summary>SQL à exécuter une fois</summary><pre>create table if not exists mattexo_docs (
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id text not null,
+  kind text not null,
+  data jsonb,
+  updated bigint not null,
+  deleted boolean not null default false,
+  primary key (user_id, id)
+);
+alter table mattexo_docs enable row level security;
+create policy "mattexo_own" on mattexo_docs for all
+  using (user_id = auth.uid()) with check (user_id = auth.uid());</pre></details>
+    <label>URL du projet</label><input id="s-sburl" value="${esc(s.sbUrl)}" placeholder="https://xxxx.supabase.co">
+    <label>Clé anon public</label><input id="s-sbkey" type="password" value="${esc(s.sbKey)}">
+    <p><button data-act="save-sb">Enregistrer la config</button></p>
+    <label>E-mail</label><input id="s-email" type="email" autocomplete="username">
+    <label>Mot de passe (6 caractères minimum)</label><input id="s-pass" type="password" autocomplete="current-password">
+    <p class="row"><button class="p" data-act="sb-login" ${st.busy?'disabled':''}>Se connecter</button><button data-act="sb-signup" ${st.busy?'disabled':''}>Créer un compte</button>
+      <button data-act="sync" ${st.busy?'disabled':''}>Synchroniser</button><button data-act="sb-logout">Se déconnecter</button></p>
+    <p class="mut">${st.sbUser?'Connecté : '+esc(st.sbUser):'Non connecté'}${st.sync?' · '+esc(st.sync):''}</p></div>
   <div class="card"><b>Ma limite réelle</b>${limitsHtml()}
     <p><button data-act="test-limit" ${st.busy?'disabled':''}>Tester ma limite</button></p></div>
   <div class="card"><b>Sauvegarde</b><p class="row"><button data-act="export">Exporter (JSON)</button>
     <label class="btn" style="margin:0">Importer<input id="imp" type="file" accept=".json" hidden></label></p></div>`;
+}
+
+/* ---------- synchronisation entre appareils (Supabase) ---------- */
+const RB={
+  c:null,k:'',
+  cli(){
+    const s=settings();if(!s.sbUrl||!s.sbKey||!window.supabase) return null;
+    const k=s.sbUrl+'|'+s.sbKey;
+    if(!this.c||this.k!==k){this.c=window.supabase.createClient(s.sbUrl.trim(),s.sbKey.trim());this.k=k}
+    return this.c;
+  },
+  async user(){const c=this.cli();if(!c) return null;const {data}=await c.auth.getSession();return data.session?.user||null},
+  async list(){const {data,error}=await this.cli().from('mattexo_docs').select('id,kind,updated,deleted');if(error) throw error;return data||[]},
+  async fetch(ids){
+    const out=[];
+    for(let i=0;i<ids.length;i+=6){
+      const {data,error}=await this.cli().from('mattexo_docs').select('id,kind,data,updated,deleted').in('id',ids.slice(i,i+6));
+      if(error) throw error;out.push(...data);
+    }
+    return out;
+  },
+  async upsert(rows){for(const r of rows){const {error}=await this.cli().from('mattexo_docs').upsert(r,{onConflict:'user_id,id'});if(error) throw error}}
+};
+let syncing=false,syncTimer=null;
+function scheduleSync(){if(!settings().sbUrl) return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>syncNow(true),3000)}
+// Chaque document (TD, erreur) porte un horodatage « updated » : le plus récent gagne. Les pages-images sont synchronisées à part.
+async function syncNow(silent){
+  if(syncing) return;
+  const user=await RB.user().catch(()=>null);
+  if(!user){if(!silent) throw new Error("Connecte-toi d'abord (Réglages → Synchronisation).");return}
+  syncing=true;st.sync='Synchronisation…';
+  try{
+    const remote=new Map((await RB.list()).map(r=>[r.id,r])),tomb=getTomb();
+    let tds=await DB.all('tds'),errs=await DB.all('errs'),changed=false;
+    const tdMap=new Map(tds.map(t=>[t.id,t])),erMap=new Map(errs.map(e=>[e.id,e]));
+    // 1) ce qui est plus récent à distance
+    const need=[];
+    for(const [id,r] of remote){
+      if(id.startsWith('pg:')) continue;
+      const loc=(id.startsWith('td:')?tdMap:erMap).get(id.slice(3));
+      if(r.updated>(loc?.updated||0)&&r.updated>(tomb[id]||0)) need.push(id);
+    }
+    for(const r of await RB.fetch(need)){
+      const store=r.id.startsWith('td:')?'tds':'errs',key=r.id.slice(3);
+      if(r.deleted){await DB.delRaw(store,key);changed=true;continue}
+      const d=r.data||{};d.updated=r.updated;
+      if(store==='tds'){const old=tdMap.get(key);d.pages=old?.pages;d.pagesStamp=old?.pagesStamp||0}
+      await DB.putRaw(store,d);changed=true;
+    }
+    tds=await DB.all('tds');
+    const needPg=tds.filter(t=>{const r=remote.get('pg:'+t.id);return r&&!r.deleted&&(!t.pages?.length||r.updated>(t.pagesStamp||0))&&r.updated>(tomb['pg:'+t.id]||0)}).map(t=>'pg:'+t.id);
+    for(const r of await RB.fetch(needPg)){
+      const t=tds.find(x=>'pg:'+x.id===r.id);
+      if(t&&r.data?.pages){t.pages=r.data.pages;t.pagesStamp=r.updated;await DB.putRaw('tds',t);changed=true}
+    }
+    errs=await DB.all('errs');
+    // 2) ce qui est plus récent ici
+    const up=[],ru=id=>remote.get(id)?.updated||0;
+    for(const t of tds){
+      const {pages,...data}=t;
+      if((t.updated||0)>ru('td:'+t.id)) up.push({id:'td:'+t.id,kind:'td',data,updated:t.updated,deleted:false});
+      if(pages?.length&&(t.pagesStamp||0)>ru('pg:'+t.id)) up.push({id:'pg:'+t.id,kind:'pg',data:{pages},updated:t.pagesStamp,deleted:false});
+    }
+    for(const e of errs) if((e.updated||0)>ru('er:'+e.id)) up.push({id:'er:'+e.id,kind:'er',data:e,updated:e.updated,deleted:false});
+    for(const [id,tm] of Object.entries(tomb)) if(remote.has(id)&&tm>ru(id)) up.push({id,kind:id.slice(0,2),data:null,updated:tm,deleted:true});
+    if(up.length) await RB.upsert(up.map(r=>({user_id:user.id,...r})));
+    if(changed){
+      st.tds=await DB.all('tds');st.errs=await DB.all('errs');
+      if(st.tdId&&!curTd()){st.tdId=null;st.view='home'}
+      if(st.tdId&&!curExo()) st.exoId=curTd().exos[0]?.id;
+    }
+    st.sync='Synchronisé à '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})+(up.length?` · ${up.length} envoyé(s)`:'')+(changed?' · mises à jour reçues':'');
+    if(changed&&!st.busy&&!document.activeElement?.matches?.('textarea,input,select')) render();
+  }catch(e){
+    st.sync='Erreur de synchro : '+(e.message||e);
+    if(!silent) throw e;
+  }finally{syncing=false}
 }
 
 /* ---------- actions ---------- */
@@ -444,11 +689,12 @@ const A={
   tab(d){st.tab=d.k;render()},
   'toggle-corr'(d){st.show[d.key]=!st.show[d.key];render()},
   async import(){
-    const file=$('#n-pdf').files[0];let text=v('n-text')||'';
+    const file=$('#n-pdf').files[0],title0=v('n-title'),subj0=v('n-subj')||'';let text=v('n-text')||'',pages=[],starts=[0];
     await run('Lecture du PDF…',async()=>{
-      if(file) text=await extractPdf(file);
-      if(!text.trim()) throw new Error('Ajoute un PDF ou du texte.');
-      const td={id:uid(),title:v('n-title')||file?.name.replace(/\.pdf$/i,'')||'TD',created:Date.now(),exos:splitExos(text)};
+      if(file){const r=await extractPdf(file);text=r.text;pages=r.pages;starts=r.starts}
+      if(!text.trim()&&!pages.length) throw new Error('Ajoute un PDF ou du texte.');
+      const exos=text.trim()?splitExos(text,starts):pages.map((_,i)=>({id:uid(),label:'Page '+(i+1),text:'',variants:{},pageFrom:i,pageTo:i}));
+      const td={id:uid(),title:title0||file?.name.replace(/\.pdf$/i,'')||'TD',created:Date.now(),subject:subj0,pages,pagesStamp:pages.length?Date.now():0,exos};
       st.tds.push(td);await saveTd(td);
       st.tdId=td.id;st.exoId=td.exos[0]?.id;st.tab='orig';st.view='td';
     });
@@ -459,14 +705,29 @@ const A={
     st.errs=st.errs.filter(e=>e.tdId!==d.id);render()},
   async 'add-exo'(){const td=curTd();const e={id:uid(),label:'Exercice '+(td.exos.length+1),text:'',variants:{}};
     td.exos.push(e);st.exoId=e.id;st.tab='orig';await saveTd(td);render()},
-  async 'save-exo'(){const ex=curExo();ex.label=v('x-label')||ex.label;ex.text=v('x-text');await saveTd(curTd());render()},
+  async 'save-exo'(){
+    const ex=curExo();ex.label=v('x-label')||ex.label;ex.text=v('x-text');
+    const c=(v('x-clean')||'').trim();if(c!==(ex.clean||'').trim()){ex.clean=c;ex.trusted=!!c} // tu as modifié l'énoncé : il fait foi
+    await saveTd(curTd());render()},
+  async validate(){const ex=curExo();ex.clean=(v('x-clean')||'').trim();ex.text=v('x-text');ex.trusted=!!ex.clean;await saveTd(curTd());render()},
+  'show-imgs'(){st.showImgs=!st.showImgs;render()},
+  async 'del-imgs'(){const ex=curExo();ex.imgs=[];await saveTd(curTd());render()},
+  async 'clean-img'(){
+    const td=curTd(),ex=curExo(),imgs=exoImgs(td,ex);
+    if(!imgs.length){st.err="Aucune image : importe un PDF ou ajoute une capture avec « + Image ».";return render()}
+    await run("Lecture de l'image…",async()=>{
+      const raw=await callAI([{role:'system',content:sys()},{role:'user',content:imgPrompt(ex,imgs.length),imgs}]);
+      ex.clean=raw.trim().replace(/^```[a-z]*\n?/i,'').replace(/\n?```$/,'').trim();ex.trusted=false;
+      await saveTd(td);
+    });
+  },
   async 'del-exo'(){if(!confirm('Supprimer cet exo ?'))return;const td=curTd();
     td.exos=td.exos.filter(e=>e.id!==st.exoId);st.exoId=td.exos[0]?.id;await saveTd(td);render()},
   async gen(d){
     const td=curTd(),ex=curExo(),levels=d.lv==='all'?['facile','moyen','difficile']:[d.lv];
-    if(!ex.text.trim()){st.err="L'énoncé est vide.";return render()}
+    if(!((ex.clean||'')+(ex.text||'')).trim()){st.err="L'énoncé est vide : écris-le, ou utilise « Lire avec l'image ».";return render()}
     await run('Génération…',async()=>{
-      const msgs=[{role:'system',content:SYS},{role:'user',content:genPrompt(ex,levels)}];
+      const msgs=[{role:'system',content:sys()},{role:'user',content:genPrompt(ex,levels)}];
       const raw0=await callAI(msgs);
       let verified=null;
       if(settings().verify){
@@ -474,14 +735,14 @@ const A={
         const enonces=levels.filter(l=>sec(S0,l)).map(l=>`### ${LV[l]}\n`+parseVar(sec(S0,l)).enonce).join('\n\n');
         if(enonces){
           st.busy='Résolution indépendante…';render();
-          const blind=await callAI([{role:'system',content:SYS},{role:'user',content:blindPrompt(enonces)}]);
+          const blind=await callAI([{role:'system',content:sys()},{role:'user',content:blindPrompt(enonces)}]);
           st.busy='Comparaison et correction…';render();
-          verified=await callAI([{role:'system',content:SYS},{role:'user',content:verifyPrompt(raw0,blind)}]);
+          verified=await callAI([{role:'system',content:sys()},{role:'user',content:verifyPrompt(raw0,blind)}]);
         }
       }
       // 1) on garde toujours la génération d'origine ; 2) la vérification ne remplace une variante que si elle la renvoie complète
       const S0=parseSections(raw0);let n=0;
-      if(S0.ORIGINAL) ex.clean=S0.ORIGINAL;
+      if(S0.ORIGINAL&&!(ex.clean||'').trim()) ex.clean=S0.ORIGINAL;
       if(S0.RAISONNEMENT) ex.reasoning=S0.RAISONNEMENT;
       ex.notes='';
       for(const l of levels){const b=sec(S0,l);if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
@@ -501,7 +762,7 @@ const A={
   async explain(d){
     const ex=curExo(),vr=ex.variants[d.lv],key=ex.id+d.lv,q=v('ask')?.trim()||'Réexplique cette correction plus lentement, étape par étape, en expliquant pourquoi on fait chaque choix.';
     await run('Explication…',async()=>{
-      const a=await callAI([{role:'system',content:SYS},{role:'user',content:`Énoncé :\n${vr.enonce}\n\nCorrection :\n${vr.correction}\n\nMa question : ${q}`}]);
+      const a=await callAI([{role:'system',content:sys()},{role:'user',content:`Énoncé :\n${vr.enonce}\n\nCorrection :\n${vr.correction}\n\nMa question : ${q}`}]);
       (st.chat[key]=st.chat[key]||[]).push({q,a});
     });
   },
@@ -511,7 +772,7 @@ const A={
     const vr=ex.variants[k],enonce=k==='orig'?(ex.clean||ex.text):vr.enonce;
     await run('Correction de ta réponse…',async()=>{
       const img=f?await imgData(f):null;
-      const raw=await callAI([{role:'system',content:SYS},{role:'user',content:reviewPrompt(enonce,vr?.correction,mine),img}]);
+      const raw=await callAI([{role:'system',content:sys()},{role:'user',content:reviewPrompt(enonce,vr?.correction,mine),img}]);
       const S=parseSections(raw);
       const errs=(S.ERREURS||'').split('\n').map(l=>l.replace(/^[-•*\s]+/,'')).filter(l=>l.includes('|')).map(l=>{
         const [t,...r]=l.split('|');return {tag:TAGS.find(x=>x.toLowerCase()===t.trim().toLowerCase())||'Autre',text:r.join('|').trim()}});
@@ -534,12 +795,30 @@ const A={
   },
   async clean(){
     const td=curTd(),ex=curExo();
-    if(!ex.text.trim()){st.err="L'énoncé est vide.";return render()}
+    if(!(ex.text||'').trim()){st.err="Le texte brut est vide : utilise « Lire avec l'image ».";return render()}
     await run('Mise en LaTeX…',async()=>{
-      const raw=await callAI([{role:'system',content:SYS},{role:'user',content:"Réécris proprement cet énoncé extrait d'un PDF en reconstituant toutes les formules en LaTeX. Ne résous rien, ne change pas le sens, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
-      ex.clean=raw.trim();await saveTd(td);
+      const raw=await callAI([{role:'system',content:sys()},{role:'user',content:"Réécris proprement cet énoncé extrait d'un PDF en reconstituant toutes les formules en LaTeX. Attention : dans le texte extrait, les exposants, indices, numérateurs et dénominateurs sont souvent inversés ou mal placés ; rétablis-les avec prudence selon la cohérence du calcul. Ne résous rien, ne change pas le sens, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
+      ex.clean=raw.trim();ex.trusted=false;await saveTd(td);
     });
   },
+  'preset-vgemini'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-vmodel').value='gemini-2.5-flash'},
+  'preset-vopenai'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://api.openai.com/v1';$('#s-vmodel').value='gpt-4.1'},
+  'save-sb'(){
+    localStorage.setItem('mattexo.settings',JSON.stringify({...settings(),sbUrl:v('s-sburl').trim(),sbKey:v('s-sbkey').trim()}));
+    st.err='';alert('Config enregistrée. Connecte-toi maintenant.');render()},
+  async 'sb-login'(){const email=(v('s-email')||'').trim(),pass=v('s-pass')||'';await run('Connexion…',async()=>{
+    const c=RB.cli();if(!c) throw new Error("Enregistre d'abord l'URL et la clé Supabase (et vérifie ta connexion internet).");
+    const {error}=await c.auth.signInWithPassword({email,password:pass});if(error) throw error;
+    st.sbUser=(await RB.user())?.email;await syncNow(false);
+  })},
+  async 'sb-signup'(){const email=(v('s-email')||'').trim(),pass=v('s-pass')||'';await run('Création du compte…',async()=>{
+    const c=RB.cli();if(!c) throw new Error("Enregistre d'abord l'URL et la clé Supabase (et vérifie ta connexion internet).");
+    const {data,error}=await c.auth.signUp({email,password:pass});if(error) throw error;
+    if(!data.session) throw new Error("Compte créé. Confirme l'e-mail reçu (ou désactive « Confirm email » dans Supabase → Authentication → Providers → Email), puis clique sur « Se connecter ».");
+    st.sbUser=data.user?.email;await syncNow(false);
+  })},
+  async 'sb-logout'(){const c=RB.cli();if(c) await c.auth.signOut();st.sbUser=null;st.sync='';render()},
+  async sync(){await run('Synchronisation…',()=>syncNow(false))},
   'preset-gemini'(){
     $('#s-prov').value='openai';$('#s-base').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-model').value='gemini-2.5-flash';
     $('#s-eff').value='';$('#s-temp').value='';
@@ -557,7 +836,8 @@ const A={
   async 'del-err'(d){st.errs=st.errs.filter(x=>x.id!==d.id);await DB.del('errs',d.id);render()},
   'goto-err'(d){const e=st.errs.find(x=>x.id===d.id);st.tdId=e.tdId;st.exoId=e.exoId;st.tab=e.variant;st.view='td';render()},
   'save-set'(){
-    localStorage.setItem('mattexo.settings',JSON.stringify({provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked,effort:v('s-eff'),temp:v('s-temp').trim()}));
+    localStorage.setItem('mattexo.settings',JSON.stringify({...settings(),provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked,effort:v('s-eff'),temp:v('s-temp').trim(),
+      vprov:v('s-vprov'),vbase:v('s-vbase').trim(),vmodel:v('s-vmodel').trim(),vkey:v('s-vkey').trim()}));
     st.err='';alert('Enregistré.')},
   export(){
     const b=new Blob([JSON.stringify({tds:st.tds,errs:st.errs})],{type:'application/json'});
@@ -571,6 +851,11 @@ document.addEventListener('change',async e=>{
   const t=e.target;
   if(t.id==='c-tag'){st.ferr.tag=t.value;render()}
   if(t.id==='c-res'){st.ferr.res=t.value;render()}
+  if(t.id==='td-subj'){const td=curTd();td.subject=t.value;await saveTd(td)}
+  if(t.id==='x-img'&&t.files[0]){
+    try{const ex=curExo();(ex.imgs??=[]).push(await imgData(t.files[0]));await saveTd(curTd());st.showImgs=true;render()}
+    catch{st.err="Image illisible.";render()}
+  }
   if(t.id==='imp'&&t.files[0]){
     try{const d=JSON.parse(await t.files[0].text());
       for(const x of d.tds) await DB.put('tds',x);for(const x of d.errs) await DB.put('errs',x);
@@ -583,6 +868,11 @@ document.addEventListener('input',e=>{
 });
 
 if('serviceWorker' in navigator) addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+addEventListener('load',async()=>{
+  const u=await RB.user().catch(()=>null);
+  if(u){st.sbUser=u.email;syncNow(true)}
+});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&st.sbUser) syncNow(true)});
 (async()=>{await DB.open();st.tds=await DB.all('tds');st.errs=await DB.all('errs');render()})();
 </script>
 </body>
