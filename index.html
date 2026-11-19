@@ -69,7 +69,12 @@ main{padding:18px;max-width:1500px;margin:auto}
 const $=(s,e=document)=>e.querySelector(s);
 const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-const fmt=t=>esc(t).replace(/^#+\s*(.*)$/gm,'<b>$1</b>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/^- /gm,'• ').replace(/\n/g,'<br>');
+const fmt=t=>{
+  // protège les formules (y compris multi-lignes) avant la mise en forme du texte
+  const M=[];
+  const s=String(t??'').replace(/\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/g,m=>{M.push(m);return '\u0000'+(M.length-1)+'\u0000'});
+  return esc(s).replace(/^#+\s*(.*)$/gm,'<b>$1</b>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/^- /gm,'• ').replace(/\n/g,'<br>').replace(/\u0000(\d+)\u0000/g,(_,i)=>esc(M[+i]));
+};
 const LV={facile:'Plus facile',moyen:'Même niveau',difficile:'Plus difficile'};
 const TAGS=['Calcul','Méthode','Cours','Étourderie','Rédaction','Autre'];
 const fmtDate=t=>new Date(t).toLocaleDateString('fr-FR',{day:'2-digit',month:'short'});
@@ -102,6 +107,36 @@ function imgData(file){return new Promise((ok,ko)=>{const im=new Image();im.onlo
   const k=Math.min(1,1600/Math.max(im.width,im.height)),c=document.createElement('canvas');
   c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',.85))};
   im.onerror=ko;im.src=URL.createObjectURL(file)})}
+/* limites : lues dans les en-têtes de réponse (si le navigateur les expose) */
+function captureLimits(r){
+  const o={};
+  r.headers.forEach((v,k)=>{if(/ratelimit|retry-after/i.test(k)) o[k.toLowerCase()]=v});
+  if(Object.keys(o).length){
+    st.limits={h:o,t:Date.now(),model:settings().model};
+    try{localStorage.setItem('mattexo.limits',JSON.stringify(st.limits))}catch{}
+  }
+}
+function apiErr(r,d){
+  const ra=r.headers.get('retry-after');
+  return new Error((d.error?.message||('Erreur '+r.status))+(ra?` (réessaie dans ${ra} s)`:''));
+}
+function limitsHtml(){
+  const L=st.limits;
+  if(!L) return '<p class="mut">Aucune mesure pour l\'instant. Clique sur « Tester ma limite ».</p>';
+  const h=L.h,g=k=>h['x-ratelimit-'+k];
+  const rows=[['Requêtes : limite',g('limit-requests')],['Requêtes : restantes',g('remaining-requests')],['Requêtes : remise à zéro dans',g('reset-requests')],
+    ['Tokens : limite',g('limit-tokens')],['Tokens : restants',g('remaining-tokens')],['Tokens : remise à zéro dans',g('reset-tokens')],
+    ['Réessayer dans',h['retry-after']&&h['retry-after']+' s']].filter(r=>r[1]!=null&&r[1]!=='');
+  const body=rows.length?rows.map(r=>`<tr><td class="mut" style="padding:2px 12px 2px 0">${r[0]}</td><td><b>${esc(r[1])}</b></td></tr>`).join('')
+    :Object.entries(h).map(([k,v])=>`<tr><td class="mut" style="padding:2px 12px 2px 0">${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join('');
+  return `<table>${body}</table><p class="mut">Mesuré à ${new Date(L.t).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})} avec ${esc(L.model)}. Chez Groq, les requêtes sont en général comptées par jour et les tokens par minute.</p>`;
+}
+function limFoot(){
+  const L=st.limits;if(!L) return '';
+  const rq=L.h['x-ratelimit-remaining-requests'],tk=L.h['x-ratelimit-remaining-tokens'];
+  if(rq==null&&tk==null) return '';
+  return `<p class="mut">Quota restant (mesuré à ${new Date(L.t).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}) : ${rq!=null?rq+' requêtes':''}${rq!=null&&tk!=null?' · ':''}${tk!=null?tk+' tokens':''}</p>`;
+}
 async function callAI(messages){
   const s=settings();
   if(!s.key) throw new Error('Ajoute ta clé API dans Réglages.');
@@ -111,18 +146,20 @@ async function callAI(messages){
       body:JSON.stringify({model:s.model,max_tokens:8000,
         system:messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),
         messages:messages.filter(m=>m.role!=='system').map(m=>({role:m.role,content:toParts(m,'anthropic')}))})});
-    const d=await r.json(); if(!r.ok) throw new Error(d.error?.message||('Erreur '+r.status));
+    captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
     return d.content.map(c=>c.text||'').join('');
   }
   const r=await fetch(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
     headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
     body:JSON.stringify({model:s.model,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
-  const d=await r.json(); if(!r.ok) throw new Error(d.error?.message||('Erreur '+r.status));
+  captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
   return d.choices[0].message.content;
 }
 
 const SYS=`Tu es un professeur de CPGE (mathématiques et physique-chimie), rigoureux et pédagogue.
-Tu écris en français. Toutes les formules sont en LaTeX : $...$ en ligne, $$...$$ en display. Pas de blocs de code, pas de tableaux Markdown.
+Tu écris en français. TOUT ce qui est mathématique ou scientifique est écrit en LaTeX, même les expressions simples : variables ($x$), puissances ($x^2$), fractions ($\\frac{a}{b}$), indices, vecteurs, ensembles, sommes, intégrales, limites, et grandeurs physiques avec unités ($v = 3\\,\\mathrm{m\\cdot s^{-1}}$).
+Délimiteurs obligatoires : $...$ en ligne et $$...$$ en display (jamais \\( \\) ni \\[ \\]). N'écris jamais de symboles mathématiques Unicode (√, ², ≤, ∫, π, ∞…) ni de notation textuelle du type x^2 ou a/b en dehors de LaTeX.
+Pas de blocs de code, pas de tableaux Markdown, pas de HTML. Le texte courant reste en phrases normales ; les listes utilisent « - ».
 Tu ne fournis jamais une correction que tu n'as pas vérifiée étape par étape (calculs, signes, conditions d'application des théorèmes, homogénéité en physique).`;
 
 function genPrompt(ex,levels){
@@ -212,7 +249,8 @@ function splitExos(text){
 }
 
 /* ---------- state ---------- */
-const st={view:'home',tdId:null,exoId:null,tab:'orig',busy:'',err:'',show:{},chat:{},tds:[],errs:[],ferr:{tag:'',q:'',res:'open'}};
+const st={view:'home',tdId:null,exoId:null,tab:'orig',busy:'',err:'',show:{},chat:{},tds:[],errs:[],ferr:{tag:'',q:'',res:'open'},limits:null};
+try{st.limits=JSON.parse(localStorage.getItem('mattexo.limits')||'null')}catch{}
 const curTd=()=>st.tds.find(t=>t.id===st.tdId);
 const curExo=()=>curTd()?.exos.find(e=>e.id===st.exoId);
 const saveTd=td=>DB.put('tds',td);
@@ -220,7 +258,7 @@ const saveTd=td=>DB.put('tds',td);
 /* ---------- render ---------- */
 function render(){
   const a=$('#app');
-  a.innerHTML=({home:vHome,td:vTd,carnet:vCarnet,settings:vSettings})[st.view]();
+  a.innerHTML=({home:vHome,td:vTd,carnet:vCarnet,settings:vSettings})[st.view]()+limFoot();
   math();
 }
 function math(){
@@ -267,7 +305,7 @@ function vOrig(ex){
     ${ex.notes&&!/^RAS/i.test(ex.notes)?`<div class="mut">Vérification IA : ${fmt(ex.notes)}</div>`:''}
     <label>Libellé</label><input id="x-label" value="${esc(ex.label)}">
     <label>Texte brut (modifiable)</label><textarea id="x-text" style="min-height:140px">${esc(ex.text)}</textarea>
-    <p class="row"><button data-act="save-exo">Enregistrer</button><button class="d" data-act="del-exo">Supprimer l'exo</button></p>
+    <p class="row"><button data-act="save-exo">Enregistrer</button><button data-act="clean" ${st.busy?'disabled':''}>Mettre l'énoncé en LaTeX</button><button class="d" data-act="del-exo">Supprimer l'exo</button></p>
     ${vMine(ex,'orig')}`;
 }
 function vVariant(ex,k){
@@ -332,6 +370,8 @@ function vSettings(){
     <label>Clé API</label><input id="s-key" type="password" value="${esc(s.key)}">
     <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Double vérification des corrections (2ᵉ appel, plus fiable, un peu plus lent)</label>
     <p class="row"><button class="p" data-act="save-set">Enregistrer</button><button data-act="preset-gemini">Préréglage Gemini (clé gratuite sur aistudio.google.com)</button></p></div>
+  <div class="card"><b>Ma limite réelle</b>${limitsHtml()}
+    <p><button data-act="test-limit" ${st.busy?'disabled':''}>Tester ma limite</button></p></div>
   <div class="card"><b>Sauvegarde</b><p class="row"><button data-act="export">Exporter (JSON)</button>
     <label class="btn" style="margin:0">Importer<input id="imp" type="file" accept=".json" hidden></label></p></div>`;
 }
@@ -413,6 +453,21 @@ const A={
     const ex=curExo(),r=ex.reviews[d.k][+d.i];
     for(const e of r.errs){const x={id:uid(),tdId:st.tdId,exoId:ex.id,variant:d.k,tag:e.tag,text:e.text,fix:'',created:Date.now(),resolved:false};st.errs.push(x);await DB.put('errs',x)}
     r.added=true;await saveTd(curTd());render();
+  },
+  async 'test-limit'(){
+    const t0=Date.now();
+    await run('Mesure de la limite…',async()=>{
+      await callAI([{role:'user',content:'Réponds uniquement : ok'}]);
+      if(!st.limits||st.limits.t<t0) throw new Error("Ce fournisseur n'expose pas les en-têtes de limite au navigateur : la limite exacte est visible sur son site (page « Limits » / « Rate limits »).");
+    });
+  },
+  async clean(){
+    const td=curTd(),ex=curExo();
+    if(!ex.text.trim()){st.err="L'énoncé est vide.";return render()}
+    await run('Mise en LaTeX…',async()=>{
+      const raw=await callAI([{role:'system',content:SYS},{role:'user',content:"Réécris proprement cet énoncé extrait d'un PDF en reconstituant toutes les formules en LaTeX. Ne résous rien, ne change pas le sens, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
+      ex.clean=raw.trim();await saveTd(td);
+    });
   },
   'preset-gemini'(){
     $('#s-prov').value='openai';$('#s-base').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-model').value='gemini-2.5-flash';
