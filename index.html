@@ -92,7 +92,7 @@ const DB={db:null,
 };
 
 /* ---------- settings ---------- */
-const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true};
+const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true,effort:'',temp:''};
 const settings=()=>{try{return {...DEF,...JSON.parse(localStorage.getItem('mattexo.settings')||'{}')}}catch{return {...DEF}}};
 
 /* ---------- IA ---------- */
@@ -137,21 +137,35 @@ function limFoot(){
   if(rq==null&&tk==null) return '';
   return `<p class="mut">Quota restant (mesuré à ${new Date(L.t).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}) : ${rq!=null?rq+' requêtes':''}${rq!=null&&tk!=null?' · ':''}${tk!=null?tk+' tokens':''}</p>`;
 }
+// fetch avec nouvel essai automatique si la limite (429) est atteinte
+async function post(url,init){
+  for(let i=0;;i++){
+    const r=await fetch(url,init);
+    if(r.status!==429||i>=2) return r;
+    const w=Math.min(parseFloat(r.headers.get('retry-after'))||20,60),prev=st.busy;
+    st.busy=`Limite atteinte, nouvel essai dans ${Math.ceil(w)} s…`;render();
+    await new Promise(ok=>setTimeout(ok,w*1000));
+    st.busy=prev;render();
+  }
+}
 async function callAI(messages){
   const s=settings();
   if(!s.key) throw new Error('Ajoute ta clé API dans Réglages.');
+  const extra={};
+  if(s.temp!==''&&!isNaN(parseFloat(s.temp))) extra.temperature=parseFloat(s.temp);
   if(s.provider==='anthropic'){
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+    const r=await post('https://api.anthropic.com/v1/messages',{method:'POST',
       headers:{'content-type':'application/json','x-api-key':s.key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:s.model,max_tokens:8000,
+      body:JSON.stringify({model:s.model,max_tokens:8000,...extra,
         system:messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),
         messages:messages.filter(m=>m.role!=='system').map(m=>({role:m.role,content:toParts(m,'anthropic')}))})});
     captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
     return d.content.map(c=>c.text||'').join('');
   }
-  const r=await fetch(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
+  if(s.effort) extra.reasoning_effort=s.effort;
+  const r=await post(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
     headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
-    body:JSON.stringify({model:s.model,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
+    body:JSON.stringify({model:s.model,...extra,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
   captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
   return d.choices[0].message.content;
 }
@@ -190,11 +204,18 @@ ${levels.map(l=>`===${l.toUpperCase()}===
 <<CORRECTION>>
 (correction détaillée)`).join('\n')}`;
 }
-const verifyPrompt=raw=>`Voici des variantes d'exercices avec leurs corrections, générées par une IA. Résous chaque variante indépendamment, compare avec la correction fournie, et corrige toute erreur (calcul, raisonnement, énoncé mal posé ou ambigu). Conserve EXACTEMENT le même format de balises (===ORIGINAL===, ===RAISONNEMENT===, ===FACILE===/===MOYEN===/===DIFFICILE=== avec <<ENONCE>> et <<CORRECTION>>), renvoie tout le contenu corrigé, puis ajoute une dernière section :
+const blindPrompt=enonces=>`Résous complètement et rigoureusement chacun de ces exercices, indépendamment les uns des autres, avec les calculs détaillés et le résultat final. Vérifie chaque résultat (substitution, cas particulier, ordre de grandeur, homogénéité). Si un énoncé est ambigu ou impossible, signale-le.
+
+${enonces}`;
+const verifyPrompt=(raw,blind)=>`Voici (A) des variantes d'exercices avec leurs corrections proposées, et (B) pour chaque énoncé, une résolution indépendante faite séparément. Compare A et B pour chaque variante : si les résultats finaux ou des étapes divergent, refais le calcul toi-même pas à pas pour trancher, puis corrige la correction fautive (garde la rédaction détaillée en étapes). Corrige aussi tout énoncé mal posé, ambigu ou insoluble (modifie l'énoncé si nécessaire). Conserve EXACTEMENT le même format de balises (===ORIGINAL===, ===RAISONNEMENT===, ===FACILE===/===MOYEN===/===DIFFICILE=== avec <<ENONCE>> et <<CORRECTION>>), renvoie tout le contenu, puis ajoute une dernière section :
 ===NOTES===
 (liste brève des corrections apportées, ou « RAS »)
 
-${raw}`;
+[A]
+${raw}
+
+[B]
+${blind}`;
 
 const reviewPrompt=(en,ref,mine)=>`Corrige la copie d'un élève de prépa comme le ferait un professeur.
 
@@ -368,8 +389,11 @@ function vSettings(){
     <label>URL de base (OpenAI-compatible)</label><input id="s-base" value="${esc(s.base)}">
     <label>Modèle</label><input id="s-model" value="${esc(s.model)}">
     <label>Clé API</label><input id="s-key" type="password" value="${esc(s.key)}">
-    <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Double vérification des corrections (2ᵉ appel, plus fiable, un peu plus lent)</label>
-    <p class="row"><button class="p" data-act="save-set">Enregistrer</button><button data-act="preset-gemini">Préréglage Gemini (clé gratuite sur aistudio.google.com)</button></p></div>
+    <label>Effort de raisonnement (vide = défaut ; « high » conseillé pour les maths avec gpt-oss)</label>
+    <select id="s-eff">${['','low','medium','high'].map(x=>`<option value="${x}" ${s.effort===x?'selected':''}>${x||'défaut'}</option>`).join('')}</select>
+    <label>Température (vide = défaut ; 0.2 limite les erreurs)</label><input id="s-temp" value="${esc(s.temp)}" placeholder="0.2">
+    <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Vérification indépendante (3 appels : l'IA résout à part, compare puis corrige ; bien plus fiable, plus lent)</label>
+    <p class="row"><button class="p" data-act="save-set">Enregistrer</button><button data-act="preset-groq">Préréglage Groq</button><button data-act="preset-gemini">Préréglage Gemini</button></p></div>
   <div class="card"><b>Ma limite réelle</b>${limitsHtml()}
     <p><button data-act="test-limit" ${st.busy?'disabled':''}>Tester ma limite</button></p></div>
   <div class="card"><b>Sauvegarde</b><p class="row"><button data-act="export">Exporter (JSON)</button>
@@ -415,14 +439,28 @@ const A={
     if(!ex.text.trim()){st.err="L'énoncé est vide.";return render()}
     await run('Génération…',async()=>{
       const msgs=[{role:'system',content:SYS},{role:'user',content:genPrompt(ex,levels)}];
-      let raw=await callAI(msgs);
-      if(settings().verify){st.busy='Vérification des corrections…';render();
-        raw=await callAI([{role:'system',content:SYS},{role:'user',content:verifyPrompt(raw)}])}
-      const S=parseSections(raw);let n=0;
-      if(S.ORIGINAL) ex.clean=S.ORIGINAL;
-      if(S.RAISONNEMENT) ex.reasoning=S.RAISONNEMENT;
-      if(S.NOTES) ex.notes=S.NOTES;
-      for(const l of levels){const b=S[l.toUpperCase()];if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
+      const raw0=await callAI(msgs);
+      let verified=null;
+      if(settings().verify){
+        const S0=parseSections(raw0);
+        const enonces=levels.filter(l=>S0[l.toUpperCase()]).map(l=>`### ${LV[l]}\n`+parseVar(S0[l.toUpperCase()]).enonce).join('\n\n');
+        if(enonces){
+          st.busy='Résolution indépendante…';render();
+          const blind=await callAI([{role:'system',content:SYS},{role:'user',content:blindPrompt(enonces)}]);
+          st.busy='Comparaison et correction…';render();
+          verified=await callAI([{role:'system',content:SYS},{role:'user',content:verifyPrompt(raw0,blind)}]);
+        }
+      }
+      const apply=txt=>{
+        const S=parseSections(txt);let n=0;
+        if(S.ORIGINAL) ex.clean=S.ORIGINAL;
+        if(S.RAISONNEMENT) ex.reasoning=S.RAISONNEMENT;
+        ex.notes=S.NOTES||'';
+        for(const l of levels){const b=S[l.toUpperCase()];if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
+        return n;
+      };
+      let n=verified?apply(verified):0;
+      if(!n) n=apply(raw0);
       if(!n) throw new Error('Réponse illisible, réessaie.');
       await saveTd(td);if(d.lv!=='all')st.tab=d.lv;else st.tab='facile';
     });
@@ -471,6 +509,11 @@ const A={
   },
   'preset-gemini'(){
     $('#s-prov').value='openai';$('#s-base').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-model').value='gemini-2.5-flash';
+    $('#s-eff').value='';$('#s-temp').value='';
+  },
+  'preset-groq'(){
+    $('#s-prov').value='openai';$('#s-base').value='https://api.groq.com/openai/v1';$('#s-model').value='openai/gpt-oss-120b';
+    $('#s-eff').value='high';$('#s-temp').value='0.2';
   },
   async 'add-err'(){
     const text=v('f-text')?.trim();if(!text)return;
@@ -481,7 +524,7 @@ const A={
   async 'del-err'(d){st.errs=st.errs.filter(x=>x.id!==d.id);await DB.del('errs',d.id);render()},
   'goto-err'(d){const e=st.errs.find(x=>x.id===d.id);st.tdId=e.tdId;st.exoId=e.exoId;st.tab=e.variant;st.view='td';render()},
   'save-set'(){
-    localStorage.setItem('mattexo.settings',JSON.stringify({provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked}));
+    localStorage.setItem('mattexo.settings',JSON.stringify({provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked,effort:v('s-eff'),temp:v('s-temp').trim()}));
     st.err='';alert('Enregistré.')},
   export(){
     const b=new Blob([JSON.stringify({tds:st.tds,errs:st.errs})],{type:'application/json'});
