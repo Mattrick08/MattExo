@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MattExo</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--card2:#1e222b;--line:#2a2f3a;--tx:#e8eaf0;--mut:#8b93a5;--ac:#ff7a3d;--ok:#3ecf8e;--ko:#ff5d5d;--r:12px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+header h1{font-size:18px;margin:0;cursor:pointer}
+header h1 span{color:var(--ac)}
+nav{margin-left:auto;display:flex;gap:6px}
+button,.btn{background:var(--card2);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--ac)}
+button.p{background:var(--ac);border-color:var(--ac);color:#111;font-weight:600}
+button.d{color:var(--ko)}
+button.s{padding:3px 8px;font-size:13px}
+button.on{border-color:var(--ac);color:var(--ac)}
+button:disabled{opacity:.5;cursor:wait}
+input,select,textarea{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;width:100%}
+textarea{resize:vertical;min-height:80px}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+main{padding:18px;max-width:1500px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:200px minmax(0,1fr) 330px;gap:14px;align-items:start}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.mut{color:var(--mut);font-size:13px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.exo-item{display:block;width:100%;text-align:left;margin-bottom:6px}
+.exo-item.on{background:var(--card2)}
+.banner{padding:10px 14px;border-radius:8px;margin-bottom:12px}
+.banner.busy{background:#2a2112;border:1px solid var(--ac)}
+.banner.err{background:#2a1414;border:1px solid var(--ko)}
+.txt{background:var(--card2);border-radius:8px;padding:12px;margin:8px 0;overflow-x:auto}
+.tag{font-size:11px;border:1px solid var(--line);border-radius:20px;padding:1px 8px;color:var(--mut)}
+.err-item{border-left:3px solid var(--ko);padding:6px 10px;margin:8px 0;background:var(--card2);border-radius:0 8px 8px 0}
+.err-item.res{border-color:var(--ok);opacity:.65}
+.sticky{position:sticky;top:64px}
+.q{border-left:3px solid var(--ac);padding-left:10px;margin:8px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1 data-act="home">Matt<span>Exo</span></h1>
+  <nav>
+    <button data-act="home">TD</button>
+    <button data-act="carnet">Carnet d'erreurs</button>
+    <button data-act="settings">Réglages</button>
+  </nav>
+</header>
+<main id="app"></main>
+
+<script>
+/* ---------- utils ---------- */
+const $=(s,e=document)=>e.querySelector(s);
+const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const fmt=t=>esc(t).replace(/^#+\s*(.*)$/gm,'<b>$1</b>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/^- /gm,'• ').replace(/\n/g,'<br>');
+const LV={facile:'Plus facile',moyen:'Même niveau',difficile:'Plus difficile'};
+const TAGS=['Calcul','Méthode','Cours','Étourderie','Rédaction','Autre'];
+const fmtDate=t=>new Date(t).toLocaleDateString('fr-FR',{day:'2-digit',month:'short'});
+
+/* ---------- IndexedDB ---------- */
+const DB={db:null,
+  open(){return new Promise((ok,ko)=>{const r=indexedDB.open('mattexo',1);
+    r.onupgradeneeded=()=>{r.result.createObjectStore('tds',{keyPath:'id'});r.result.createObjectStore('errs',{keyPath:'id'});};
+    r.onsuccess=()=>{this.db=r.result;ok()};r.onerror=()=>ko(r.error)})},
+  tx(s,m,f){return new Promise((ok,ko)=>{const t=this.db.transaction(s,m);const q=f(t.objectStore(s));t.oncomplete=()=>ok(q&&q.result);t.onerror=()=>ko(t.error)})},
+  all(s){return this.tx(s,'readonly',o=>o.getAll())},
+  put(s,v){return this.tx(s,'readwrite',o=>o.put(v))},
+  del(s,k){return this.tx(s,'readwrite',o=>o.delete(k))},
+  clear(s){return this.tx(s,'readwrite',o=>o.clear())}
+};
+
+/* ---------- settings ---------- */
+const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true};
+const settings=()=>{try{return {...DEF,...JSON.parse(localStorage.getItem('mattexo.settings')||'{}')}}catch{return {...DEF}}};
+
+/* ---------- IA ---------- */
+async function callAI(messages){
+  const s=settings();
+  if(!s.key) throw new Error('Ajoute ta clé API dans Réglages.');
+  if(s.provider==='anthropic'){
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+      headers:{'content-type':'application/json','x-api-key':s.key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:s.model,max_tokens:8000,
+        system:messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),
+        messages:messages.filter(m=>m.role!=='system')})});
+    const d=await r.json(); if(!r.ok) throw new Error(d.error?.message||('Erreur '+r.status));
+    return d.content.map(c=>c.text||'').join('');
+  }
+  const r=await fetch(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
+    headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
+    body:JSON.stringify({model:s.model,messages})});
+  const d=await r.json(); if(!r.ok) throw new Error(d.error?.message||('Erreur '+r.status));
+  return d.choices[0].message.content;
+}
+
+const SYS=`Tu es un professeur de CPGE (mathématiques et physique-chimie), rigoureux et pédagogue.
+Tu écris en français. Toutes les formules sont en LaTeX : $...$ en ligne, $$...$$ en display. Pas de blocs de code, pas de tableaux Markdown.
+Tu ne fournis jamais une correction que tu n'as pas vérifiée étape par étape (calculs, signes, conditions d'application des théorèmes, homogénéité en physique).`;
+
+function genPrompt(ex,levels){
+  const defs={
+    facile:'FACILE : même raisonnement/technique centrale, mais plus guidé — valeurs ou fonctions plus simples, moins d\'étapes de calcul, éventuellement une question intermédiaire donnée.',
+    moyen:'MOYEN : même difficulté et même raisonnement que l\'original, mais objets, valeurs et contexte réellement différents (pas un simple renommage de lettres).',
+    difficile:'DIFFICILE : même raisonnement de base, avec une étape supplémentaire (généralisation, cas limite, piège classique ou calcul plus lourd).'};
+  return `Voici l'énoncé d'un exercice de TD, extrait d'un PDF (des symboles peuvent être mal reconnus : reconstitue-les).
+
+<<<ENONCE_BRUT
+${ex.text}
+ENONCE_BRUT>>>
+
+Produis :
+1. L'énoncé original proprement réécrit en LaTeX.
+2. Le raisonnement commun : la méthode/idées clés à maîtriser (court).
+3. Les variantes demandées : ${levels.map(l=>defs[l]).join(' ')}
+Chaque variante doit être autonome, non ambiguë, résoluble, avec une correction détaillée rédigée comme en prépa (étapes numérotées, résultat final clairement indiqué, vérification de cohérence).
+
+Format STRICT (ne rien écrire hors de ces balises) :
+===ORIGINAL===
+(énoncé propre)
+===RAISONNEMENT===
+(méthode commune)
+${levels.map(l=>`===${l.toUpperCase()}===
+<<ENONCE>>
+(énoncé de la variante)
+<<CORRECTION>>
+(correction détaillée)`).join('\n')}`;
+}
+const verifyPrompt=raw=>`Voici des variantes d'exercices avec leurs corrections, générées par une IA. Résous chaque variante indépendamment, compare avec la correction fournie, et corrige toute erreur (calcul, raisonnement, énoncé mal posé ou ambigu). Conserve EXACTEMENT le même format de balises (===ORIGINAL===, ===RAISONNEMENT===, ===FACILE===/===MOYEN===/===DIFFICILE=== avec <<ENONCE>> et <<CORRECTION>>), renvoie tout le contenu corrigé, puis ajoute une dernière section :
+===NOTES===
+(liste brève des corrections apportées, ou « RAS »)
+
+${raw}`;
+
+function parseSections(t){
+  const out={};const ms=[...t.matchAll(/^===\s*([A-Z_]+)\s*===\s*$/gm)];
+  ms.forEach((m,i)=>{out[m[1]]=t.slice(m.index+m[0].length,i+1<ms.length?ms[i+1].index:undefined).trim()});
+  return out;
+}
+function parseVar(b){
+  const g=k=>{const m=b.match(new RegExp('<<'+k+'>>([\\s\\S]*?)(?=<<[A-Z]+>>|$)'));return m?m[1].trim():''};
+  return {enonce:g('ENONCE'),correction:g('CORRECTION')};
+}
+
+/* ---------- PDF ---------- */
+async function extractPdf(file){
+  pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
+  let out='';
+  for(let p=1;p<=pdf.numPages;p++){
+    const tc=await (await pdf.getPage(p)).getTextContent();
+    let y=null,line='';
+    for(const it of tc.items){
+      const ny=it.transform[5];
+      if(y!==null&&Math.abs(ny-y)>3){out+=line.trim()+'\n';line=''}
+      line+=it.str+' ';y=ny;
+    }
+    out+=line.trim()+'\n';
+  }
+  return out;
+}
+function splitExos(text){
+  const idx=[...text.matchAll(/^[ \t]*(?:exercice|exo|probl[eè]me)\s*\d+.*$/gim)].map(m=>m.index);
+  if(!idx.length) return [{id:uid(),label:'Exercice 1',text:text.trim(),variants:{}}];
+  return idx.map((s,i)=>{
+    const chunk=text.slice(s,idx[i+1]).trim();
+    return {id:uid(),label:chunk.split('\n')[0].slice(0,40),text:chunk,variants:{}};
+  });
+}
+
+/* ---------- state ---------- */
+const st={view:'home',tdId:null,exoId:null,tab:'orig',busy:'',err:'',show:{},chat:{},tds:[],errs:[],ferr:{tag:'',q:'',res:'open'}};
+const curTd=()=>st.tds.find(t=>t.id===st.tdId);
+const curExo=()=>curTd()?.exos.find(e=>e.id===st.exoId);
+const saveTd=td=>DB.put('tds',td);
+
+/* ---------- render ---------- */
+function render(){
+  const a=$('#app');
+  a.innerHTML=({home:vHome,td:vTd,carnet:vCarnet,settings:vSettings})[st.view]();
+  math();
+}
+function math(){
+  if(window.renderMathInElement) renderMathInElement(document.body,{throwOnError:false,delimiters:[
+    {left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},
+    {left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false}]});
+  else setTimeout(math,300);
+}
+const banner=()=>(st.busy?`<div class="banner busy">⏳ ${esc(st.busy)}</div>`:'')+(st.err?`<div class="banner err">⚠ ${esc(st.err)}</div>`:'');
+
+function vHome(){
+  return `${banner()}
+  <div class="card"><b>Nouveau TD</b>
+    <label>Titre</label><input id="n-title" placeholder="TD 5 — Intégrales">
+    <label>PDF du TD</label><input id="n-pdf" type="file" accept="application/pdf">
+    <label>… ou colle le texte du TD</label><textarea id="n-text" placeholder="Exercice 1 ..."></textarea>
+    <p><button class="p" data-act="import" ${st.busy?'disabled':''}>Importer</button>
+    <span class="mut">Les exos sont détectés via « Exercice N » ; tu peux les corriger/ajouter ensuite.</span></p>
+  </div>
+  <h3>Mes TD</h3>
+  ${st.tds.length?st.tds.sort((a,b)=>b.created-a.created).map(t=>`
+    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.exos.length} exo(s) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s)</div></div>
+    <button data-act="open-td" data-id="${t.id}">Ouvrir</button><button class="d" data-act="del-td" data-id="${t.id}">✕</button></div>`).join(''):'<p class="mut">Aucun TD pour l\'instant.</p>'}`;
+}
+
+function vTd(){
+  const td=curTd(),ex=curExo(); if(!td) return vHome();
+  const left=`<div>${td.exos.map(e=>`<button class="exo-item ${e.id===st.exoId?'on':''}" data-act="sel-exo" data-id="${e.id}">${esc(e.label)} ${Object.keys(e.variants).length?'✓':''}${st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length?' <span class="tag">'+st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length+' ✗</span>':''}</button>`).join('')}
+    <button class="s" data-act="add-exo">+ Ajouter un exo</button></div>`;
+  let main='<p class="mut">Sélectionne un exercice.</p>';
+  if(ex){
+    const tabs=[['orig','Original'],...Object.entries(LV)];
+    main=`<div class="card"><div class="row"><b style="flex:1">${esc(td.title)} — ${esc(ex.label)}</b>
+      <button class="p" data-act="gen" data-lv="all" ${st.busy?'disabled':''}>${ex.variants.moyen?'Regénérer les 3 variantes':'Générer les 3 variantes'}</button></div>
+      <div class="tabs" style="margin-top:12px">${tabs.map(([k,l])=>`<button class="${st.tab===k?'on':''}" data-act="tab" data-k="${k}">${l}${k!=='orig'&&ex.variants[k]?' ✓':''}</button>`).join('')}</div>
+      ${st.tab==='orig'?vOrig(ex):vVariant(ex,st.tab)}</div>`;
+  }
+  return `${banner()}<div class="row" style="margin-bottom:10px"><button data-act="home">← TD</button></div>
+    <div class="grid">${left}<div>${main}</div><div class="sticky">${ex?vErrPanel(td,ex):''}</div></div>`;
+}
+function vOrig(ex){
+  return `${ex.clean?`<div class="txt">${fmt(ex.clean)}</div>`:''}
+    ${ex.reasoning?`<div class="card"><b>Raisonnement commun</b><div>${fmt(ex.reasoning)}</div></div>`:''}
+    ${ex.notes&&!/^RAS/i.test(ex.notes)?`<div class="mut">Vérification IA : ${fmt(ex.notes)}</div>`:''}
+    <label>Libellé</label><input id="x-label" value="${esc(ex.label)}">
+    <label>Texte brut (modifiable)</label><textarea id="x-text" style="min-height:140px">${esc(ex.text)}</textarea>
+    <p class="row"><button data-act="save-exo">Enregistrer</button><button class="d" data-act="del-exo">Supprimer l'exo</button></p>`;
+}
+function vVariant(ex,k){
+  const v=ex.variants[k];
+  if(!v) return `<p class="mut">Pas encore de variante « ${LV[k]} ».</p><button class="p" data-act="gen" data-lv="${k}" ${st.busy?'disabled':''}>Générer</button>`;
+  const key=ex.id+k,chat=st.chat[key]||[];
+  return `<div class="txt">${fmt(v.enonce)}</div>
+    <div class="row"><button data-act="toggle-corr" data-key="${key}">${st.show[key]?'Masquer':'Voir'} la correction</button>
+    <button data-act="gen" data-lv="${k}" ${st.busy?'disabled':''}>Régénérer</button></div>
+    ${st.show[key]?`<div class="txt">${fmt(v.correction)}</div>
+      ${chat.map(c=>`<div class="q">${fmt(c.q)}</div><div class="txt">${fmt(c.a)}</div>`).join('')}
+      <label>Une étape pas claire ? (vide = réexplication complète)</label>
+      <div class="row"><input id="ask" style="flex:1" placeholder="Pourquoi on majore ici ?"><button class="p" data-act="explain" data-lv="${k}" ${st.busy?'disabled':''}>Réexpliquer</button></div>`:''}`;
+}
+function vErrPanel(td,ex){
+  const list=st.errs.filter(e=>e.exoId===ex.id).sort((a,b)=>b.created-a.created);
+  return `<div class="card"><b>Carnet — ${esc(ex.label)}</b>
+    ${list.map(errItem).join('')||'<p class="mut">Aucune erreur notée ici.</p>'}
+    <hr style="border-color:var(--line)">
+    <b>Noter une erreur</b>
+    <label>Quel exo ?</label><select id="f-exo">${td.exos.map(e=>`<option value="${e.id}" ${e.id===ex.id?'selected':''}>${esc(e.label)}</option>`).join('')}</select>
+    <label>Quelle version ?</label><select id="f-var"><option value="orig">Original</option>${Object.entries(LV).map(([k,l])=>`<option value="${k}" ${st.tab===k?'selected':''}>${l}</option>`).join('')}</select>
+    <label>Type</label><select id="f-tag">${TAGS.map(t=>`<option>${t}</option>`).join('')}</select>
+    <label>Mon erreur</label><textarea id="f-text" placeholder="J'ai oublié de vérifier la continuité…"></textarea>
+    <label>À retenir (optionnel)</label><textarea id="f-fix" style="min-height:50px"></textarea>
+    <p><button class="p" data-act="add-err">Ajouter au carnet</button></p></div>`;
+}
+function errItem(e,withLink){
+  const td=st.tds.find(t=>t.id===e.tdId),ex=td?.exos.find(x=>x.id===e.exoId);
+  return `<div class="err-item ${e.resolved?'res':''}">
+    <div class="row"><span class="tag">${esc(e.tag)}</span><span class="tag">${e.variant==='orig'?'Original':LV[e.variant]}</span><span class="mut">${fmtDate(e.created)}</span></div>
+    ${withLink?`<div class="mut">${esc(td?.title||'TD supprimé')} › ${esc(ex?.label||'?')}</div>`:''}
+    <div>${fmt(e.text)}</div>${e.fix?`<div class="mut">➜ ${fmt(e.fix)}</div>`:''}
+    <div class="row" style="margin-top:6px">${withLink&&ex?`<button class="s" data-act="goto-err" data-id="${e.id}">Ouvrir l'exo</button>`:''}
+    <button class="s" data-act="toggle-err" data-id="${e.id}">${e.resolved?'Rouvrir':'✓ Maîtrisée'}</button><button class="s d" data-act="del-err" data-id="${e.id}">✕</button></div></div>`;
+}
+function vCarnet(){
+  const f=st.ferr;
+  const list=st.errs.filter(e=>(!f.tag||e.tag===f.tag)&&(f.res==='all'||(f.res==='open')===!e.resolved)&&(!f.q||(e.text+e.fix).toLowerCase().includes(f.q.toLowerCase()))).sort((a,b)=>b.created-a.created);
+  return `<h3>Carnet d'erreurs</h3><div class="card row">
+    <select id="c-tag" style="width:auto"><option value="">Tous types</option>${TAGS.map(t=>`<option ${f.tag===t?'selected':''}>${t}</option>`).join('')}</select>
+    <select id="c-res" style="width:auto"><option value="open" ${f.res==='open'?'selected':''}>À retenir</option><option value="done" ${f.res==='done'?'selected':''}>Maîtrisées</option><option value="all" ${f.res==='all'?'selected':''}>Toutes</option></select>
+    <input id="c-q" style="flex:1;min-width:150px" placeholder="Rechercher…" value="${esc(f.q)}"></div>
+    ${list.map(e=>errItem(e,true)).join('')||'<p class="mut">Rien ici.</p>'}`;
+}
+function vSettings(){
+  const s=settings();
+  return `<h3>Réglages</h3><div class="card">
+    <div class="banner busy">Un abonnement ChatGPT Plus n'inclut pas l'API : il faut une clé API (platform.openai.com), facturée à l'usage. La clé reste dans ton navigateur (localStorage) et n'est envoyée qu'au fournisseur choisi.</div>
+    <label>Fournisseur</label><select id="s-prov"><option value="openai" ${s.provider==='openai'?'selected':''}>OpenAI (ou compatible)</option><option value="anthropic" ${s.provider==='anthropic'?'selected':''}>Anthropic</option></select>
+    <label>URL de base (OpenAI-compatible)</label><input id="s-base" value="${esc(s.base)}">
+    <label>Modèle</label><input id="s-model" value="${esc(s.model)}">
+    <label>Clé API</label><input id="s-key" type="password" value="${esc(s.key)}">
+    <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Double vérification des corrections (2ᵉ appel, plus fiable, un peu plus lent)</label>
+    <p class="row"><button class="p" data-act="save-set">Enregistrer</button></p></div>
+  <div class="card"><b>Sauvegarde</b><p class="row"><button data-act="export">Exporter (JSON)</button>
+    <label class="btn" style="margin:0">Importer<input id="imp" type="file" accept=".json" hidden></label></p></div>`;
+}
+
+/* ---------- actions ---------- */
+const v=id=>$('#'+id)?.value;
+async function run(label,fn){
+  st.busy=label;st.err='';render();
+  try{await fn()}catch(e){st.err=e.message||String(e)}
+  st.busy='';render();
+}
+const A={
+  home(){st.view='home';render()},
+  carnet(){st.view='carnet';render()},
+  settings(){st.view='settings';render()},
+  'open-td'(d){st.tdId=d.id;st.exoId=curTd().exos[0]?.id;st.tab='orig';st.view='td';render()},
+  'sel-exo'(d){st.exoId=d.id;st.tab='orig';render()},
+  tab(d){st.tab=d.k;render()},
+  'toggle-corr'(d){st.show[d.key]=!st.show[d.key];render()},
+  async import(){
+    const file=$('#n-pdf').files[0];let text=v('n-text')||'';
+    await run('Lecture du PDF…',async()=>{
+      if(file) text=await extractPdf(file);
+      if(!text.trim()) throw new Error('Ajoute un PDF ou du texte.');
+      const td={id:uid(),title:v('n-title')||file?.name.replace(/\.pdf$/i,'')||'TD',created:Date.now(),exos:splitExos(text)};
+      st.tds.push(td);await saveTd(td);
+      st.tdId=td.id;st.exoId=td.exos[0]?.id;st.tab='orig';st.view='td';
+    });
+  },
+  async 'del-td'(d){if(!confirm('Supprimer ce TD et ses erreurs ?'))return;
+    await DB.del('tds',d.id);st.tds=st.tds.filter(t=>t.id!==d.id);
+    for(const e of st.errs.filter(e=>e.tdId===d.id)) await DB.del('errs',e.id);
+    st.errs=st.errs.filter(e=>e.tdId!==d.id);render()},
+  async 'add-exo'(){const td=curTd();const e={id:uid(),label:'Exercice '+(td.exos.length+1),text:'',variants:{}};
+    td.exos.push(e);st.exoId=e.id;st.tab='orig';await saveTd(td);render()},
+  async 'save-exo'(){const ex=curExo();ex.label=v('x-label')||ex.label;ex.text=v('x-text');await saveTd(curTd());render()},
+  async 'del-exo'(){if(!confirm('Supprimer cet exo ?'))return;const td=curTd();
+    td.exos=td.exos.filter(e=>e.id!==st.exoId);st.exoId=td.exos[0]?.id;await saveTd(td);render()},
+  async gen(d){
+    const td=curTd(),ex=curExo(),levels=d.lv==='all'?['facile','moyen','difficile']:[d.lv];
+    if(!ex.text.trim()){st.err="L'énoncé est vide.";return render()}
+    await run('Génération…',async()=>{
+      const msgs=[{role:'system',content:SYS},{role:'user',content:genPrompt(ex,levels)}];
+      let raw=await callAI(msgs);
+      if(settings().verify){st.busy='Vérification des corrections…';render();
+        raw=await callAI([{role:'system',content:SYS},{role:'user',content:verifyPrompt(raw)}])}
+      const S=parseSections(raw);let n=0;
+      if(S.ORIGINAL) ex.clean=S.ORIGINAL;
+      if(S.RAISONNEMENT) ex.reasoning=S.RAISONNEMENT;
+      if(S.NOTES) ex.notes=S.NOTES;
+      for(const l of levels){const b=S[l.toUpperCase()];if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
+      if(!n) throw new Error('Réponse illisible, réessaie.');
+      await saveTd(td);if(d.lv!=='all')st.tab=d.lv;else st.tab='facile';
+    });
+  },
+  async explain(d){
+    const ex=curExo(),vr=ex.variants[d.lv],key=ex.id+d.lv,q=v('ask')?.trim()||'Réexplique cette correction plus lentement, étape par étape, en expliquant pourquoi on fait chaque choix.';
+    await run('Explication…',async()=>{
+      const a=await callAI([{role:'system',content:SYS},{role:'user',content:`Énoncé :\n${vr.enonce}\n\nCorrection :\n${vr.correction}\n\nMa question : ${q}`}]);
+      (st.chat[key]=st.chat[key]||[]).push({q,a});
+    });
+  },
+  async 'add-err'(){
+    const text=v('f-text')?.trim();if(!text)return;
+    const exoId=v('f-exo'),e={id:uid(),tdId:st.tdId,exoId,variant:v('f-var'),tag:v('f-tag'),text,fix:v('f-fix')?.trim()||'',created:Date.now(),resolved:false};
+    st.errs.push(e);await DB.put('errs',e);render();
+  },
+  async 'toggle-err'(d){const e=st.errs.find(x=>x.id===d.id);e.resolved=!e.resolved;await DB.put('errs',e);render()},
+  async 'del-err'(d){st.errs=st.errs.filter(x=>x.id!==d.id);await DB.del('errs',d.id);render()},
+  'goto-err'(d){const e=st.errs.find(x=>x.id===d.id);st.tdId=e.tdId;st.exoId=e.exoId;st.tab=e.variant;st.view='td';render()},
+  'save-set'(){
+    localStorage.setItem('mattexo.settings',JSON.stringify({provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked}));
+    st.err='';alert('Enregistré.')},
+  export(){
+    const b=new Blob([JSON.stringify({tds:st.tds,errs:st.errs})],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='mattexo-backup.json';a.click()},
+};
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]');if(!b||b.disabled)return;
+  const f=A[b.dataset.act];if(f)f(b.dataset);
+});
+document.addEventListener('change',async e=>{
+  const t=e.target;
+  if(t.id==='c-tag'){st.ferr.tag=t.value;render()}
+  if(t.id==='c-res'){st.ferr.res=t.value;render()}
+  if(t.id==='imp'&&t.files[0]){
+    try{const d=JSON.parse(await t.files[0].text());
+      for(const x of d.tds) await DB.put('tds',x);for(const x of d.errs) await DB.put('errs',x);
+      st.tds=await DB.all('tds');st.errs=await DB.all('errs');alert('Import terminé.');
+    }catch{alert('Fichier invalide.')}
+  }
+});
+document.addEventListener('input',e=>{
+  if(e.target.id==='c-q'){st.ferr.q=e.target.value;const p=e.target.selectionStart;render();const i=$('#c-q');i.focus();i.setSelectionRange(p,p)}
+});
+
+(async()=>{await DB.open();st.tds=await DB.all('tds');st.errs=await DB.all('errs');render()})();
+</script>
+</body>
+</html>
