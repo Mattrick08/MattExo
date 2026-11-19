@@ -84,6 +84,17 @@ const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',ke
 const settings=()=>{try{return {...DEF,...JSON.parse(localStorage.getItem('mattexo.settings')||'{}')}}catch{return {...DEF}}};
 
 /* ---------- IA ---------- */
+function toParts(m,prov){
+  if(!m.img) return m.content;
+  const b=m.img.split(',')[1];
+  return prov==='anthropic'
+    ?[{type:'image',source:{type:'base64',media_type:'image/jpeg',data:b}},{type:'text',text:m.content}]
+    :[{type:'image_url',image_url:{url:m.img}},{type:'text',text:m.content}];
+}
+function imgData(file){return new Promise((ok,ko)=>{const im=new Image();im.onload=()=>{
+  const k=Math.min(1,1600/Math.max(im.width,im.height)),c=document.createElement('canvas');
+  c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',.85))};
+  im.onerror=ko;im.src=URL.createObjectURL(file)})}
 async function callAI(messages){
   const s=settings();
   if(!s.key) throw new Error('Ajoute ta clé API dans Réglages.');
@@ -92,13 +103,13 @@ async function callAI(messages){
       headers:{'content-type':'application/json','x-api-key':s.key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({model:s.model,max_tokens:8000,
         system:messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),
-        messages:messages.filter(m=>m.role!=='system')})});
+        messages:messages.filter(m=>m.role!=='system').map(m=>({role:m.role,content:toParts(m,'anthropic')}))})});
     const d=await r.json(); if(!r.ok) throw new Error(d.error?.message||('Erreur '+r.status));
     return d.content.map(c=>c.text||'').join('');
   }
   const r=await fetch(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
     headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
-    body:JSON.stringify({model:s.model,messages})});
+    body:JSON.stringify({model:s.model,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
   const d=await r.json(); if(!r.ok) throw new Error(d.error?.message||('Erreur '+r.status));
   return d.choices[0].message.content;
 }
@@ -140,6 +151,22 @@ const verifyPrompt=raw=>`Voici des variantes d'exercices avec leurs corrections,
 (liste brève des corrections apportées, ou « RAS »)
 
 ${raw}`;
+
+const reviewPrompt=(en,ref,mine)=>`Corrige la copie d'un élève de prépa comme le ferait un professeur.
+
+Énoncé :
+${en}
+
+${ref?'Correction de référence (l\'élève peut suivre une autre méthode valide) :\n'+ref+'\n\n':''}Réponse de l'élève :
+${mine||'(voir la photo jointe)'}
+
+Donne : un verdict global (juste / partiellement juste / faux), ce qui est correct, chaque erreur précisément localisée avec la correction du passage, et un conseil pour ne plus la refaire. Sois exigeant sur la rigueur (hypothèses, justifications, unités). Maths en LaTeX.
+
+Format STRICT :
+===RETOUR===
+(ton retour)
+===ERREURS===
+(une ligne par erreur : Type | description courte ; Type parmi Calcul, Méthode, Cours, Étourderie, Rédaction, Autre ; écrire « Aucune » s'il n'y en a pas)`;
 
 function parseSections(t){
   const out={};const ms=[...t.matchAll(/^===\s*([A-Z_]+)\s*===\s*$/gm)];
@@ -233,7 +260,8 @@ function vOrig(ex){
     ${ex.notes&&!/^RAS/i.test(ex.notes)?`<div class="mut">Vérification IA : ${fmt(ex.notes)}</div>`:''}
     <label>Libellé</label><input id="x-label" value="${esc(ex.label)}">
     <label>Texte brut (modifiable)</label><textarea id="x-text" style="min-height:140px">${esc(ex.text)}</textarea>
-    <p class="row"><button data-act="save-exo">Enregistrer</button><button class="d" data-act="del-exo">Supprimer l'exo</button></p>`;
+    <p class="row"><button data-act="save-exo">Enregistrer</button><button class="d" data-act="del-exo">Supprimer l'exo</button></p>
+    ${vMine(ex,'orig')}`;
 }
 function vVariant(ex,k){
   const v=ex.variants[k];
@@ -245,7 +273,16 @@ function vVariant(ex,k){
     ${st.show[key]?`<div class="txt">${fmt(v.correction)}</div>
       ${chat.map(c=>`<div class="q">${fmt(c.q)}</div><div class="txt">${fmt(c.a)}</div>`).join('')}
       <label>Une étape pas claire ? (vide = réexplication complète)</label>
-      <div class="row"><input id="ask" style="flex:1" placeholder="Pourquoi on majore ici ?"><button class="p" data-act="explain" data-lv="${k}" ${st.busy?'disabled':''}>Réexpliquer</button></div>`:''}`;
+      <div class="row"><input id="ask" style="flex:1" placeholder="Pourquoi on majore ici ?"><button class="p" data-act="explain" data-lv="${k}" ${st.busy?'disabled':''}>Réexpliquer</button></div>`:''}
+    ${vMine(ex,k)}`;
+}
+function vMine(ex,k){
+  const revs=ex.reviews?.[k]||[];
+  return `<div class="card" style="margin-top:12px"><b>Ma réponse</b>
+    <textarea id="mine" placeholder="Écris ta résolution… (ou joins une photo de ta copie)"></textarea>
+    <div class="row" style="margin-top:8px"><input id="mine-img" type="file" accept="image/*" style="width:auto;flex:1"><button class="p" data-act="review" data-k="${k}" ${st.busy?'disabled':''}>Me faire corriger</button></div>
+    ${revs.map((r,i)=>`<div class="q">${fmt(r.mine||'(photo)')}</div><div class="txt">${fmt(r.fb)}</div>
+      ${r.errs.length&&!r.added?`<button class="s" data-act="rev-errs" data-k="${k}" data-i="${i}">+ Ajouter ${r.errs.length} erreur(s) au carnet</button>`:''}${r.added?'<span class="mut">✓ ajoutées au carnet</span>':''}`).join('')}</div>`;
 }
 function vErrPanel(td,ex){
   const list=st.errs.filter(e=>e.exoId===ex.id).sort((a,b)=>b.created-a.created);
@@ -287,7 +324,7 @@ function vSettings(){
     <label>Modèle</label><input id="s-model" value="${esc(s.model)}">
     <label>Clé API</label><input id="s-key" type="password" value="${esc(s.key)}">
     <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Double vérification des corrections (2ᵉ appel, plus fiable, un peu plus lent)</label>
-    <p class="row"><button class="p" data-act="save-set">Enregistrer</button></p></div>
+    <p class="row"><button class="p" data-act="save-set">Enregistrer</button><button data-act="preset-gemini">Préréglage Gemini (clé gratuite sur aistudio.google.com)</button></p></div>
   <div class="card"><b>Sauvegarde</b><p class="row"><button data-act="export">Exporter (JSON)</button>
     <label class="btn" style="margin:0">Importer<input id="imp" type="file" accept=".json" hidden></label></p></div>`;
 }
@@ -349,6 +386,29 @@ const A={
       const a=await callAI([{role:'system',content:SYS},{role:'user',content:`Énoncé :\n${vr.enonce}\n\nCorrection :\n${vr.correction}\n\nMa question : ${q}`}]);
       (st.chat[key]=st.chat[key]||[]).push({q,a});
     });
+  },
+  async review(d){
+    const td=curTd(),ex=curExo(),k=d.k,mine=v('mine')?.trim(),f=$('#mine-img').files[0];
+    if(!mine&&!f){st.err='Écris ta réponse ou joins une photo.';return render()}
+    const vr=ex.variants[k],enonce=k==='orig'?(ex.clean||ex.text):vr.enonce;
+    await run('Correction de ta réponse…',async()=>{
+      const img=f?await imgData(f):null;
+      const raw=await callAI([{role:'system',content:SYS},{role:'user',content:reviewPrompt(enonce,vr?.correction,mine),img}]);
+      const S=parseSections(raw);
+      const errs=(S.ERREURS||'').split('\n').map(l=>l.replace(/^[-•*\s]+/,'')).filter(l=>l.includes('|')).map(l=>{
+        const [t,...r]=l.split('|');return {tag:TAGS.find(x=>x.toLowerCase()===t.trim().toLowerCase())||'Autre',text:r.join('|').trim()}});
+      (ex.reviews??={})[k]??=[];
+      ex.reviews[k].push({mine,fb:S.RETOUR||raw,errs,added:false,date:Date.now()});
+      await saveTd(td);
+    });
+  },
+  async 'rev-errs'(d){
+    const ex=curExo(),r=ex.reviews[d.k][+d.i];
+    for(const e of r.errs){const x={id:uid(),tdId:st.tdId,exoId:ex.id,variant:d.k,tag:e.tag,text:e.text,fix:'',created:Date.now(),resolved:false};st.errs.push(x);await DB.put('errs',x)}
+    r.added=true;await saveTd(curTd());render();
+  },
+  'preset-gemini'(){
+    $('#s-prov').value='openai';$('#s-base').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-model').value='gemini-2.5-flash';
   },
   async 'add-err'(){
     const text=v('f-text')?.trim();if(!text)return;
