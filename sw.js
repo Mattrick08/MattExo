@@ -1,4 +1,4 @@
-const CACHE='mattexo-v3';
+const CACHE='mattexo-v4';
 const LOCAL=['./','./index.html','./manifest.webmanifest','./icon-192.png','./icon-512.png','./apple-touch-icon.png'];
 const CDN=['cdn.jsdelivr.net','cdnjs.cloudflare.com'];
 
