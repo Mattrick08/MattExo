@@ -103,7 +103,7 @@ const DB={db:null,
 };
 
 /* ---------- settings ---------- */
-const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true,effort:'',temp:'',vprov:'openai',vbase:'',vmodel:'',vkey:'',sbUrl:'',sbKey:''};
+const DEF={provider:'openai',base:'https://api.openai.com/v1',model:'gpt-4.1',key:'',verify:true,effort:'',temp:'',maxout:'',vprov:'openai',vbase:'',vmodel:'',vkey:'',sbUrl:'',sbKey:''};
 const settings=()=>{try{return {...DEF,...JSON.parse(localStorage.getItem('mattexo.settings')||'{}')}}catch{return {...DEF}}};
 
 /* ---------- IA ---------- */
@@ -153,40 +153,74 @@ function limFoot(){
 async function post(url,init){
   for(let i=0;;i++){
     const r=await fetch(url,init);
-    if(r.status!==429||i>=2) return r;
-    const w=Math.min(parseFloat(r.headers.get('retry-after'))||20,60),prev=st.busy;
+    if(r.status!==429||i>=4) return r;
+    const w=Math.min(parseFloat(r.headers.get('retry-after'))||20,70),prev=st.busy;
     st.busy=`Limite atteinte, nouvel essai dans ${Math.ceil(w)} s…`;render();
     await new Promise(ok=>setTimeout(ok,w*1000));
     st.busy=prev;render();
   }
 }
+// estimation grossière du nombre de tokens envoyés (français + LaTeX ≈ 2,8 caractères par token)
+const estTok=ms=>Math.ceil(ms.map(m=>typeof m.content==='string'?m.content:'').join('').length/2.8)+ms.reduce((n,m)=>n+((m.imgs||(m.img?[m.img]:[])).length)*1000,0);
+const tpmOf=s=>{
+  const L=st.limits,h=L&&L.model===s.model?parseInt(L.h['x-ratelimit-limit-tokens']):NaN;
+  return h||st.tpm?.[s.model]||0;
+};
+// plafonne la réponse pour que (prompt + réponse) tienne dans la limite par minute
+function maxOut(s,ms){
+  const tpm=tpmOf(s);let m=parseInt(s.maxout)||0;
+  if(tpm){
+    const cap=Math.floor(tpm-estTok(ms)*1.15-200);
+    if(cap<600) throw new Error(`Requête trop volumineuse pour ta limite (${tpm} tokens par minute) : l'énoncé est trop long. Raccourcis-le ou découpe l'exo en plusieurs.`);
+    m=m?Math.min(m,cap):cap;
+  }
+  return m;
+}
 // utilise le « modèle vision » (s'il est configuré) dès qu'un message contient une image
 async function callAI(messages){
   const s0=settings(),hasImg=messages.some(m=>m.img||m.imgs),useV=hasImg&&s0.vkey&&s0.vmodel;
-  const s=useV?{...s0,provider:s0.vprov,base:s0.vbase||s0.base,model:s0.vmodel,key:s0.vkey,effort:'',temp:''}:s0;
-  try{return await callAI0(messages,s)}
-  catch(e){if(hasImg&&!useV) e.message+=" — ce modèle ne lit peut-être pas les images : renseigne un « Modèle vision » dans Réglages.";throw e}
+  let s=useV?{...s0,provider:s0.vprov,base:s0.vbase||s0.base,model:s0.vmodel,key:s0.vkey,effort:'',temp:''}:s0;
+  for(let essai=0;;essai++){
+    try{return await callAI0(messages,s)}
+    catch(e){
+      const m=e.message||'',x=/Limit (\d+),\s*(?:Used \d+,\s*)?Requested (\d+)/i.exec(m);
+      if(x){st.tpm={...(st.tpm||{}),[s.model]:+x[1]};try{localStorage.setItem('mattexo.tpm',JSON.stringify(st.tpm))}catch{}}
+      const trop=e.code==='cut'||/too large|tokens per minute|\bTPM\b|reduce (your|the) (message|prompt)|context length|maximum context|request_too_large/i.test(m);
+      if(trop&&essai<1&&s.provider!=='anthropic'){
+        // un seul nouvel essai : raisonnement réduit + réponse plafonnée à ce que ta limite autorise
+        const prev=st.busy;st.busy='Requête trop longue : nouvel essai en mode économe…';render();
+        s={...s,effort:'low'};st.busy=prev;continue;
+      }
+      if(trop) e.message=`Requête trop longue pour ta limite${tpmOf(s)?` (${tpmOf(s)} tokens par minute)`:''} : ${m} — Essais : décocher la vérification indépendante, mettre l'effort de raisonnement sur « low », générer une variante à la fois, ou raccourcir l'énoncé.`;
+      if(hasImg&&!useV) e.message+=" — ce modèle ne lit peut-être pas les images : renseigne un « Modèle vision » dans Réglages.";
+      throw e;
+    }
+  }
 }
 async function callAI0(messages,s){
   if(!s.key) throw new Error('Ajoute ta clé API dans Réglages.');
   const extra={};
   if(s.temp!==''&&!isNaN(parseFloat(s.temp))) extra.temperature=parseFloat(s.temp);
+  const mo=maxOut(s,messages);
   if(s.provider==='anthropic'){
     const r=await post('https://api.anthropic.com/v1/messages',{method:'POST',
       headers:{'content-type':'application/json','x-api-key':s.key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:s.model,max_tokens:8000,...extra,
+      body:JSON.stringify({model:s.model,max_tokens:mo||8000,...extra,
         system:messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),
         messages:messages.filter(m=>m.role!=='system').map(m=>({role:m.role,content:toParts(m,'anthropic')}))})});
     captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
     return d.content.map(c=>c.text||'').join('');
   }
   if(s.effort) extra.reasoning_effort=s.effort;
+  if(mo) extra[/api\.openai\.com/.test(s.base)?'max_completion_tokens':'max_tokens']=mo;
   const r=await post(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
     headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
     body:JSON.stringify({model:s.model,...extra,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
   captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
   const ch=d.choices?.[0];
-  if(ch?.finish_reason==='length') throw new Error("Réponse coupée (trop longue pour le modèle ou la limite). Mets l'effort de raisonnement sur « medium », ou génère une variante à la fois.");
+  if(ch?.finish_reason==='length'){
+    const e=new Error("Réponse coupée (trop longue pour le modèle ou la limite).");e.code='cut';throw e;
+  }
   return ch?.message?.content||'';
 }
 
@@ -200,12 +234,12 @@ const SUBJ={
   physique:"\nMatière : PHYSIQUE. Précise le système, le référentiel et les hypothèses ou approximations. Vérifie l'homogénéité de chaque résultat, donne les applications numériques avec unités et un nombre cohérent de chiffres significatifs, puis commente l'ordre de grandeur.",
   chimie:"\nMatière : CHIMIE. Équations-bilan équilibrées avec états physiques, formules avec \\ce{...}, tableaux d'avancement décrits ligne par ligne, unités et chiffres significatifs, conventions de signe des grandeurs thermodynamiques."};
 const sys=()=>SYS+(SUBJ[curTd()?.subject]||'');
-function genPrompt(ex,levels){
+function genPrompt(ex,levels,withReason=true){
   const defs={
     facile:'FACILE : même raisonnement/technique centrale, mais plus guidé — valeurs ou fonctions plus simples, moins d\'étapes de calcul, éventuellement une question intermédiaire donnée.',
     moyen:'MOYEN : même difficulté et même raisonnement que l\'original, mais objets, valeurs et contexte réellement différents (pas un simple renommage de lettres).',
     difficile:'DIFFICILE : même raisonnement de base, avec une étape supplémentaire (généralisation, cas limite, piège classique ou calcul plus lourd).'};
-  const clean=(ex.clean||'').trim(),raw=(ex.text||'').trim();
+  const clean=(ex.clean||'').trim(),raw=(ex.text||'').trim(),orig=!clean&&withReason;
   const body=clean
     ?`<<<ENONCE_RECONSTITUE${ex.trusted?' (relu et validé par l\'élève : il fait foi)':''}
 ${clean}
@@ -221,27 +255,22 @@ TEXTE_BRUT_PDF>>>`;
 
 ${body}
 
-Produis ${clean?'':"l'énoncé original proprement réécrit en LaTeX, puis "}le raisonnement commun (méthode et idées clés, court) et les variantes demandées :
+Produis ${orig?"l'énoncé original proprement réécrit en LaTeX, puis ":''}${withReason?'le raisonnement commun (méthode et idées clés, court) et ':''}la variante demandée :
 ${levels.map(l=>'- '+defs[l]).join('\n')}
-Chaque variante doit être autonome, non ambiguë, résoluble, avec une correction détaillée rédigée comme en prépa (étapes numérotées, résultat final clairement indiqué, vérification de cohérence).
+${!withReason&&ex.reasoning?`Raisonnement commun à conserver : ${ex.reasoning}\n`:''}Chaque variante doit être autonome, non ambiguë, résoluble, avec une correction détaillée rédigée comme en prépa (étapes numérotées, résultat final clairement indiqué, vérification de cohérence).
 Si l'énoncé comporte un schéma, une figure, un graphe, un circuit ou un montage, chaque variante doit le décrire précisément en texte (éléments, positions, orientations, valeurs, axes, points remarquables) dans une ligne « Schéma : … » : les figures ne peuvent pas être dessinées, et l'énoncé doit rester résoluble sans les voir.
 
 Format STRICT (ne rien écrire hors de ces balises) :
-${clean?'':'===ORIGINAL===\n(énoncé propre)\n'}===RAISONNEMENT===
-(méthode commune)
-${levels.map(l=>`===${l.toUpperCase()}===
+${orig?'===ORIGINAL===\n(énoncé propre)\n':''}${withReason?'===RAISONNEMENT===\n(méthode commune)\n':''}${levels.map(l=>`===${l.toUpperCase()}===
 <<ENONCE>>
 (énoncé de la variante)
 <<CORRECTION>>
 (correction détaillée)`).join('\n')}`;
 }
-const imgPrompt=(ex,n)=>`Voici ${n>1?n+' images (pages) d\'un TD':'une image (page) d\'un TD'}. Transcris UNIQUEMENT l'exercice « ${ex.label} », fidèlement, en LaTeX : exposants, indices, fractions (numérateur / dénominateur dans le bon ordre), racines, intégrales, unités, formules chimiques avec \\ce{...}.
-Si l'exercice contient un schéma, une figure, un graphe, un circuit ou un montage, ajoute à la fin un bloc « Schéma : » qui le décrit précisément et complètement en français (éléments, positions, orientations, valeurs et grandeurs notées, légendes, axes, courbes et points remarquables, sens des flèches), de façon à pouvoir résoudre l'exercice sans voir la figure.
-Le texte extrait automatiquement du PDF, ci-dessous, n'est qu'une aide : il contient souvent des erreurs d'exposants, d'indices et de fractions. En cas de doute, l'image fait foi.
-<<<TEXTE_EXTRAIT
-${ex.text||'(aucun)'}
-TEXTE_EXTRAIT>>>
-Ne résous rien, n'ajoute rien d'autre. Renvoie uniquement l'énoncé.`;
+const san=x=>typeof x==='string'?x.replace(/\u0000/g,'').replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f]/g,'').replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,''):Array.isArray(x)?x.map(san):x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,v])=>[san(k),san(v)])):x;
+const imgPrompt=(ex,n)=>`Voici ${n>1?n+' images (pages) d\'un TD':'une image (page) d\'un TD'}. Recopie UNIQUEMENT le texte de l'exercice « ${ex.label} », mot pour mot, en TEXTE BRUT (pas de LaTeX) : écris les formules en notation linéaire lisible, ex. x^2, a_n, (a+b)/(c+d), sqrt(x), int_0^1 f(t) dt, sum_{k=1}^{n}, H2SO4, mol.L^-1. Respecte bien ce qui est en exposant, en indice, au numérateur et au dénominateur. Garde la numérotation des questions.
+Si l'exercice contient un schéma, une figure, un graphe, un circuit ou un montage, ajoute à la fin un bloc « Schéma : » qui le décrit précisément en français (éléments, positions, valeurs et grandeurs notées, légendes, axes, courbes, points remarquables, sens des flèches), de façon à pouvoir résoudre sans voir la figure.
+Ne résous rien, n'ajoute rien d'autre.`;
 const blindPrompt=enonces=>`Résous complètement et rigoureusement chacun de ces exercices, indépendamment les uns des autres, avec les calculs détaillés et le résultat final. Vérifie chaque résultat (substitution, cas particulier, ordre de grandeur, homogénéité). Si un énoncé est ambigu ou impossible, signale-le.
 
 ${enonces}`;
@@ -391,6 +420,18 @@ function layout(items,base){
   return o.replace(/\s+\}/g,'}').replace(/\{\s+/g,'{').replace(/[ \t]{2,}/g,' ');
 }
 
+async function readImg(td,ex,imgs){
+  const raw=await callAI([{role:'system',content:'Tu es un OCR scientifique précis. Tu recopies fidèlement, sans résoudre.'},{role:'user',content:imgPrompt(ex,imgs.length),imgs}]);
+  const t=san(raw||'').trim().replace(/^```[a-z]*\n?/i,'').replace(/\n?```$/,'').trim();
+  if(!t) throw new Error("Le modèle vision n'a rien renvoyé. Réessaie ou ajoute une capture plus nette avec « + Image ».");
+  ex.text=t;ex.trusted=false;await saveTd(td);
+}
+async function toLatex(td,ex){
+  const raw=await callAI([{role:'system',content:sys()},{role:'user',content:"Voici le texte d'un énoncé recopié (notation linéaire : ^ exposant, _ indice, / fraction). Convertis-le en LaTeX propre ($...$ en ligne, $$...$$ pour les formules importantes, \\ce{...} pour la chimie). Garde exactement les mêmes mots, la même numérotation et le même sens ; conserve le bloc « Schéma : » tel quel en texte. Ne résous rien, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
+  const t=san(raw||'').trim().replace(/^```[a-z]*\n?/i,'').replace(/\n?```$/,'').trim();
+  if(!t) throw new Error('Conversion LaTeX vide, réessaie.');
+  ex.clean=t;ex.trusted=false;await saveTd(td);
+}
 async function extractPdf(file){
   pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
@@ -399,7 +440,7 @@ async function extractPdf(file){
     st.busy=`Lecture de la page ${p}/${pdf.numPages}…`;render();
     const page=await pdf.getPage(p);
     starts.push(text.length);
-    text+=layoutPage((await page.getTextContent()).items)+'\n';
+    text+=san(layoutPage((await page.getTextContent()).items))+'\n';
     // image de la page : sert à vérifier l'extraction et à lire les schémas avec un modèle vision
     const w=page.getViewport({scale:1}).width,vp=page.getViewport({scale:Math.min(2,1000/w)});
     const c=document.createElement('canvas');c.width=vp.width;c.height=vp.height;
@@ -422,6 +463,7 @@ function splitExos(text,starts=[0]){
 /* ---------- state ---------- */
 const st={view:'home',tdId:null,exoId:null,tab:'orig',busy:'',err:'',show:{},chat:{},tds:[],errs:[],ferr:{tag:'',q:'',res:'open'},limits:null};
 try{st.limits=JSON.parse(localStorage.getItem('mattexo.limits')||'null')}catch{}
+try{st.tpm=JSON.parse(localStorage.getItem('mattexo.tpm')||'{}')}catch{st.tpm={}}
 const curTd=()=>st.tds.find(t=>t.id===st.tdId);
 const curExo=()=>curTd()?.exos.find(e=>e.id===st.exoId);
 const saveTd=td=>DB.put('tds',td);
@@ -487,11 +529,11 @@ function vOrig(ex){
     <label>Libellé</label><input id="x-label" value="${esc(ex.label)}">
     <label>Énoncé propre (LaTeX), modifiable${ex.trusted?' · ✓ validé':' · à vérifier'}</label>
     <textarea id="x-clean" style="min-height:110px" placeholder="Clique sur « Lire avec l'image » ou « Mettre en LaTeX », ou écris-le toi-même">${esc(ex.clean||'')}</textarea>
-    <label>Texte brut extrait du PDF (peut contenir des erreurs d'exposants / fractions)</label>
+    <label>Texte brut (lu sur l'image ou extrait du PDF) — modifiable</label>
     <textarea id="x-text" style="min-height:110px">${esc(ex.text)}</textarea>
     <p class="row"><button data-act="save-exo">Enregistrer</button><button data-act="validate">✓ Valider l'énoncé</button>
       <button data-act="show-imgs" class="${st.showImgs?'on':''}">${st.showImgs?'Masquer':'Voir'} le PDF / les images</button></p>
-    <p class="row"><button data-act="clean-img" ${b}>Lire avec l'image (schémas)</button><button data-act="clean" ${b}>Mettre en LaTeX (texte seul)</button>
+    <p class="row"><button data-act="read-img" ${b}>1. Lire le texte de l'image</button><button data-act="clean" ${b}>2. Mettre en LaTeX</button><button data-act="clean-img" ${b}>1+2 d'un coup</button>
       <label class="btn" style="margin:0">+ Image<input id="x-img" type="file" accept="image/*" hidden></label>${ex.imgs?.length?`<button data-act="del-imgs">Retirer mes ${ex.imgs.length} image(s)</button>`:''}
       <button class="d" data-act="del-exo">Supprimer l'exo</button></p>
     ${vMine(ex,'orig')}`;
@@ -558,6 +600,7 @@ function vSettings(){
     <label>Clé API</label><input id="s-key" type="password" value="${esc(s.key)}">
     <label>Effort de raisonnement (vide = défaut ; « high » conseillé pour les maths avec gpt-oss)</label>
     <select id="s-eff">${['','low','medium','high'].map(x=>`<option value="${x}" ${s.effort===x?'selected':''}>${x||'défaut'}</option>`).join('')}</select>
+    <label>Tokens max par réponse (vide = automatique selon ta limite par minute)</label><input id="s-maxout" value="${esc(s.maxout)}" placeholder="auto">
     <label>Température (vide = défaut ; 0.2 limite les erreurs)</label><input id="s-temp" value="${esc(s.temp)}" placeholder="0.2">
     <label><input id="s-ver" type="checkbox" style="width:auto" ${s.verify?'checked':''}> Vérification indépendante (3 appels : l'IA résout à part, compare puis corrige ; bien plus fiable, plus lent)</label>
     <hr style="border-color:var(--line)"><b>Modèle vision (schémas, photos de copie)</b>
@@ -663,7 +706,7 @@ async function syncNow(silent){
     }
     for(const e of errs) if(!remote.has('er:'+e.id)||(e.updated||0)>ru('er:'+e.id)) up.push({id:'er:'+e.id,kind:'er',data:e,updated:e.updated,deleted:false});
     for(const [id,tm] of Object.entries(tomb)) if(remote.has(id)&&tm>ru(id)) up.push({id,kind:id.slice(0,2),data:null,updated:tm,deleted:true});
-    if(up.length) await RB.upsert(up.map(r=>({user_id:user.id,...r})));
+    if(up.length) await RB.upsert(san(up.map(r=>({user_id:user.id,...r}))));
     if(changed){
       st.tds=await DB.all('tds');st.errs=await DB.all('errs');
       if(st.tdId&&!curTd()){st.tdId=null;st.view='home'}
@@ -716,13 +759,18 @@ const A={
   async validate(){const ex=curExo();ex.clean=(v('x-clean')||'').trim();ex.text=v('x-text');ex.trusted=!!ex.clean;await saveTd(curTd());render()},
   'show-imgs'(){st.showImgs=!st.showImgs;render()},
   async 'del-imgs'(){const ex=curExo();ex.imgs=[];await saveTd(curTd());render()},
+  async 'read-img'(){
+    const td=curTd(),ex=curExo(),imgs=exoImgs(td,ex);
+    if(!imgs.length){st.err="Aucune image : importe un PDF ou ajoute une capture avec « + Image ».";return render()}
+    await run("Lecture du texte de l'image…",async()=>{await readImg(td,ex,imgs)});
+  },
   async 'clean-img'(){
     const td=curTd(),ex=curExo(),imgs=exoImgs(td,ex);
     if(!imgs.length){st.err="Aucune image : importe un PDF ou ajoute une capture avec « + Image ».";return render()}
-    await run("Lecture de l'image…",async()=>{
-      const raw=await callAI([{role:'system',content:sys()},{role:'user',content:imgPrompt(ex,imgs.length),imgs}]);
-      ex.clean=raw.trim().replace(/^```[a-z]*\n?/i,'').replace(/\n?```$/,'').trim();ex.trusted=false;
-      await saveTd(td);
+    await run("Lecture du texte de l'image…",async()=>{
+      await readImg(td,ex,imgs);
+      st.busy='Mise en LaTeX…';render();
+      await toLatex(td,ex);
     });
   },
   async 'del-exo'(){if(!confirm('Supprimer cet exo ?'))return;const td=curTd();
@@ -731,36 +779,45 @@ const A={
     const td=curTd(),ex=curExo(),levels=d.lv==='all'?['facile','moyen','difficile']:[d.lv];
     if(!((ex.clean||'')+(ex.text||'')).trim()){st.err="L'énoncé est vide : écris-le, ou utilise « Lire avec l'image ».";return render()}
     await run('Génération…',async()=>{
-      const msgs=[{role:'system',content:sys()},{role:'user',content:genPrompt(ex,levels)}];
-      const raw0=await callAI(msgs);
-      let verified=null;
-      if(settings().verify){
-        const S0=parseSections(raw0);
-        const enonces=levels.filter(l=>sec(S0,l)).map(l=>`### ${LV[l]}\n`+parseVar(sec(S0,l)).enonce).join('\n\n');
-        if(enonces){
-          st.busy='Résolution indépendante…';render();
-          const blind=await callAI([{role:'system',content:sys()},{role:'user',content:blindPrompt(enonces)}]);
-          st.busy='Comparaison et correction…';render();
-          verified=await callAI([{role:'system',content:sys()},{role:'user',content:verifyPrompt(raw0,blind)}]);
-        }
+      // une requête par variante : plus petites (limite par minute), et chaque variante réussie est enregistrée tout de suite
+      const notes=levels.length<3?[ex.notes].filter(Boolean):[];let done=0,fail=null;
+      for(let i=0;i<levels.length&&!fail;i++){
+        const l=levels[i],tag=`${LV[l]} (${i+1}/${levels.length})`;
+        try{
+          st.busy=`${tag} : génération…`;render();
+          let raw,S,p=null,last=null;
+          for(let t=0;t<3&&!p;t++){
+            try{
+              const extra=t?"\n\nIMPORTANT : respecte STRICTEMENT le format demandé (marqueurs ===SECTION=== puis <<ENONCE>> et <<CORRECTION>>), sans rien avant ni après. Sois concis."+(t>1?" Réponse courte : correction condensée.":""):'';
+              raw=await callAI([{role:'system',content:sys()},{role:'user',content:genPrompt(ex,[l],i===0)+extra}]);
+              S=parseSections(raw);
+              const b=sec(S,l),q=b?parseVar(b):null;
+              if(q&&q.enonce&&q.correction) p=q; else last=new Error('Réponse illisible. Début reçu : '+JSON.stringify((raw||'(vide)').slice(0,300)));
+            }catch(e){last=e;if(/clé|key|401|403|invalid api/i.test(e.message)) throw e}
+            if(!p&&t<2){st.busy=`${tag} : nouvel essai…`;render();await new Promise(r=>setTimeout(r,1500))}
+          }
+          if(!p) throw last;
+          if(S.ORIGINAL&&!(ex.clean||'').trim()) ex.clean=S.ORIGINAL;
+          if(S.RAISONNEMENT&&(i===0||!ex.reasoning)) ex.reasoning=S.RAISONNEMENT;
+          ex.variants[l]=p;
+          if(settings().verify){
+            st.busy=`${tag} : résolution indépendante…`;render();
+            const blind=await callAI([{role:'system',content:sys()},{role:'user',content:blindPrompt(`### ${LV[l]}\n${p.enonce}`)}]);
+            st.busy=`${tag} : comparaison et correction…`;render();
+            const ver=await callAI([{role:'system',content:sys()},{role:'user',content:verifyPrompt(`===${l.toUpperCase()}===\n<<ENONCE>>\n${p.enonce}\n<<CORRECTION>>\n${p.correction}`,blind)}]);
+            const SV=parseSections(ver),b2=sec(SV,l);
+            if(b2&&!/^\s*OK\b/i.test(b2)){
+              // la vérification ne remplace la variante que si elle la renvoie complète
+              const p2=parseVar(b2);
+              if(p2.enonce&&p2.correction&&p2.correction.length>=0.5*p.correction.length){ex.variants[l]=p2;notes.push(LV[l]+' : '+(SV.NOTES||'corrigée'))}
+            }
+          }
+          ex.notes=notes.join('\n');
+          await saveTd(td);done++;
+        }catch(e){fail={l,e}}
       }
-      // 1) on garde toujours la génération d'origine ; 2) la vérification ne remplace une variante que si elle la renvoie complète
-      const S0=parseSections(raw0);let n=0;
-      if(S0.ORIGINAL&&!(ex.clean||'').trim()) ex.clean=S0.ORIGINAL;
-      if(S0.RAISONNEMENT) ex.reasoning=S0.RAISONNEMENT;
-      ex.notes='';
-      for(const l of levels){const b=sec(S0,l);if(b){const p=parseVar(b);if(p.enonce&&p.correction){ex.variants[l]=p;n++}}}
-      if(n&&verified){
-        const SV=parseSections(verified);
-        for(const l of levels){
-          const b=sec(SV,l);if(!b||/^\s*OK\b/i.test(b)) continue;
-          const p=parseVar(b),old=ex.variants[l];
-          if(p.enonce&&p.correction&&old&&p.correction.length>=0.5*old.correction.length) ex.variants[l]=p;
-        }
-        ex.notes=SV.NOTES||'';
-      }
-      if(!n) throw new Error('Réponse illisible. Début reçu : '+JSON.stringify((raw0||'(vide)').slice(0,300)));
-      await saveTd(td);if(d.lv!=='all')st.tab=d.lv;else st.tab='facile';
+      st.tab=d.lv==='all'?(ex.variants.facile?'facile':'orig'):(ex.variants[d.lv]?d.lv:'orig');
+      if(fail) throw new Error(`${LV[fail.l]} : ${fail.e.message}`+(done?` — ${done} variante(s) déjà enregistrée(s), relance « Régénérer » sur l'onglet manquant.`:''));
     });
   },
   async explain(d){
@@ -800,10 +857,7 @@ const A={
   async clean(){
     const td=curTd(),ex=curExo();
     if(!(ex.text||'').trim()){st.err="Le texte brut est vide : utilise « Lire avec l'image ».";return render()}
-    await run('Mise en LaTeX…',async()=>{
-      const raw=await callAI([{role:'system',content:sys()},{role:'user',content:"Réécris proprement cet énoncé extrait d'un PDF en reconstituant toutes les formules en LaTeX. Attention : dans le texte extrait, les exposants, indices, numérateurs et dénominateurs sont souvent inversés ou mal placés ; rétablis-les avec prudence selon la cohérence du calcul. Ne résous rien, ne change pas le sens, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
-      ex.clean=raw.trim();ex.trusted=false;await saveTd(td);
-    });
+    await run('Mise en LaTeX…',async()=>{await toLatex(td,ex)});
   },
   'preset-vgemini'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-vmodel').value='gemini-2.5-flash'},
   'preset-vopenai'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://api.openai.com/v1';$('#s-vmodel').value='gpt-4.1'},
@@ -829,7 +883,7 @@ const A={
   },
   'preset-groq'(){
     $('#s-prov').value='openai';$('#s-base').value='https://api.groq.com/openai/v1';$('#s-model').value='openai/gpt-oss-120b';
-    $('#s-eff').value='high';$('#s-temp').value='0.2';
+    $('#s-eff').value='medium';$('#s-temp').value='0.2';
   },
   async 'add-err'(){
     const text=v('f-text')?.trim();if(!text)return;
@@ -840,7 +894,7 @@ const A={
   async 'del-err'(d){st.errs=st.errs.filter(x=>x.id!==d.id);await DB.del('errs',d.id);render()},
   'goto-err'(d){const e=st.errs.find(x=>x.id===d.id);st.tdId=e.tdId;st.exoId=e.exoId;st.tab=e.variant;st.view='td';render()},
   'save-set'(){
-    localStorage.setItem('mattexo.settings',JSON.stringify({...settings(),provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked,effort:v('s-eff'),temp:v('s-temp').trim(),
+    localStorage.setItem('mattexo.settings',JSON.stringify({...settings(),provider:v('s-prov'),base:v('s-base'),model:v('s-model'),key:v('s-key'),verify:$('#s-ver').checked,effort:v('s-eff'),temp:v('s-temp').trim(),maxout:v('s-maxout').trim(),
       vprov:v('s-vprov'),vbase:v('s-vbase').trim(),vmodel:v('s-vmodel').trim(),vkey:v('s-vkey').trim()}));
     st.err='';alert('Enregistré.')},
   export(){
