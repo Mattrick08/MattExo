@@ -55,6 +55,18 @@ main{padding:18px;max-width:1500px;margin:auto}
 .q{border-left:3px solid var(--ac);padding-left:10px;margin:8px 0}
 .pg{max-width:100%;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block;background:#fff}
 pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;font-size:12px;overflow-x:auto}
+.bar{height:6px;background:var(--card2);border-radius:6px;overflow:hidden;margin:4px 0}
+.bar i{display:block;height:100%;background:var(--ok)}
+#printroot{display:none}
+@media print{
+  body{background:#fff!important;color:#000!important}
+  body>*:not(#printroot){display:none!important}
+  #printroot{display:block!important;color:#000;background:#fff;font:12pt/1.55 Georgia,'Times New Roman',serif;padding:0}
+  #printroot h1{font-size:20pt;margin:0 0 4px}#printroot h2{font-size:16pt;border-bottom:1px solid #000;padding-bottom:3px;margin:22px 0 8px}
+  #printroot h3{font-size:13pt;margin:14px 0 4px}#printroot h4{font-size:11pt;margin:8px 0 3px;color:#333}
+  .pv-ex{break-before:page}.pv-ex:first-of-type{break-before:auto}
+  .pv-c{border-left:3px solid #888;padding-left:10px}
+}
 </style>
 </head>
 <body>
@@ -68,6 +80,7 @@ pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;
   </nav>
 </header>
 <main id="app"></main>
+<div id="printroot"></div>
 
 <script>
 /* ---------- utils ---------- */
@@ -82,6 +95,13 @@ const fmt=t=>{
 };
 const LV={facile:'Plus facile',moyen:'Même niveau',difficile:'Plus difficile'};
 const TAGS=['Calcul','Méthode','Cours','Étourderie','Rédaction','Autre'];
+const LK=['facile','moyen','difficile'],DAY=864e5,INTERVALS=[1,3,7,14,30];
+const exoProg=ex=>({gen:LK.filter(k=>ex.variants[k]).length,done:LK.filter(k=>ex.variants[k]&&ex.prog?.[k]==='done').length});
+const tdProg=td=>td.exos.reduce((a,e)=>{const p=exoProg(e);a.gen+=p.gen;a.done+=p.done;a.tot+=3;return a},{gen:0,done:0,tot:0});
+const pct=(a,b)=>b?Math.round(100*a/b):0;
+const bar=(a,b)=>`<div class="bar"><i style="width:${pct(a,b)}%"></i></div>`;
+const errDue=e=>e.due??(e.created+DAY);
+const dueErrs=()=>st.errs.filter(e=>!e.resolved&&errDue(e)<=Date.now()).sort((a,b)=>errDue(a)-errDue(b));
 const fmtDate=t=>new Date(t).toLocaleDateString('fr-FR',{day:'2-digit',month:'short'});
 
 /* ---------- suppressions à propager (synchro) ---------- */
@@ -152,7 +172,9 @@ function limFoot(){
 // fetch avec nouvel essai automatique si la limite (429) est atteinte
 async function post(url,init){
   for(let i=0;;i++){
-    const r=await fetch(url,init);
+    let r;
+    try{r=await fetch(url,{...init,signal:AbortSignal.timeout(100000)})}
+    catch(e){if(e.name==='TimeoutError'||e.name==='AbortError') throw new Error("Pas de réponse après 100 s : le modèle est trop lent ou surchargé. Essaie un modèle plus léger (ex. gemini-3.5-flash-lite) ou un effort « low ».");throw e}
     if(r.status!==429||i>=4) return r;
     const w=Math.min(parseFloat(r.headers.get('retry-after'))||20,70),prev=st.busy;
     st.busy=`Limite atteinte, nouvel essai dans ${Math.ceil(w)} s…`;render();
@@ -475,6 +497,16 @@ function render(){
   const sb=$('#syncbtn');if(sb) sb.hidden=!settings().sbUrl;
   math();
 }
+function printDoc(td,exos){
+  const body=exos.map(ex=>{
+    const vs=LK.filter(k=>ex.variants[k]).map(k=>`<h3>${LV[k]}</h3><div>${fmt(ex.variants[k].enonce)}</div><h4>Correction</h4><div class="pv-c">${fmt(ex.variants[k].correction)}</div>`).join('');
+    return `<section class="pv-ex"><h2>${esc(ex.label)}</h2><h3>Énoncé original</h3><div>${fmt(ex.clean||ex.text||'')}</div>${ex.reasoning&&vs?`<h4>Idée commune aux variantes</h4><div>${fmt(ex.reasoning)}</div>`:''}${vs}</section>`}).join('');
+  const r=$('#printroot');
+  r.innerHTML=`<h1>${esc(td.title)}</h1><p>MattExo · ${new Date().toLocaleDateString('fr-FR')}</p>`+body;
+  math();
+  window.onafterprint=()=>{r.innerHTML=''};
+  setTimeout(()=>window.print(),500);
+}
 function math(){
   if(window.renderMathInElement) renderMathInElement(document.body,{throwOnError:false,delimiters:[
     {left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},
@@ -493,22 +525,27 @@ function vHome(){
     <p><button class="p" data-act="import" ${st.busy?'disabled':''}>Importer</button>
     <span class="mut">Les exos sont détectés via « Exercice N » ; tu peux les corriger/ajouter ensuite.</span></p>
   </div>
+  ${(()=>{const T=st.tds.reduce((a,t)=>{const p=tdProg(t);a.d+=p.done;a.t+=p.tot;return a},{d:0,t:0}),n=dueErrs().length;
+    return (T.t?`<div class="card"><b>Total : ${pct(T.d,T.t)} %</b> <span class="mut">${T.d}/${T.t} variantes faites</span>${bar(T.d,T.t)}</div>`:'')+(n?`<div class="card row"><b style="flex:1">🔁 ${n} erreur(s) à réviser aujourd'hui</b><button class="p" data-act="carnet">Réviser</button></div>`:'')})()}
   <h3>Mes TD</h3>
   ${st.tds.length?st.tds.sort((a,b)=>b.created-a.created).map(t=>`
-    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.subject?esc(t.subject)+' · ':''}${t.exos.length} exo(s) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s)</div></div>
+    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.subject?esc(t.subject)+' · ':''}${t.exos.length} exo(s) · ${tdProg(t).done}/${tdProg(t).tot} faites (${pct(tdProg(t).done,tdProg(t).tot)} %) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s)</div>${bar(tdProg(t).done,tdProg(t).tot)}</div>
     <button data-act="open-td" data-id="${t.id}">Ouvrir</button><button class="d" data-act="del-td" data-id="${t.id}">✕</button></div>`).join(''):'<p class="mut">Aucun TD pour l\'instant.</p>'}`;
 }
 
 function vTd(){
   const td=curTd(),ex=curExo(); if(!td) return vHome();
-  const left=`<div>${td.exos.map(e=>`<button class="exo-item ${e.id===st.exoId?'on':''}" data-act="sel-exo" data-id="${e.id}">${esc(e.label)} ${Object.keys(e.variants).length?'✓':''}${st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length?' <span class="tag">'+st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length+' ✗</span>':''}</button>`).join('')}
-    <button class="s" data-act="add-exo">+ Ajouter un exo</button></div>`;
+  const tp=tdProg(td);
+  const left=`<div><div class="card" style="padding:10px"><b>${pct(tp.done,tp.tot)} %</b> <span class="mut">${tp.done}/${tp.tot} faites · ${tp.gen}/${tp.tot} générées</span>${bar(tp.done,tp.tot)}</div>${td.exos.map(e=>`<button class="exo-item ${e.id===st.exoId?'on':''}" data-act="sel-exo" data-id="${e.id}">${esc(e.label)} <span class="mut">${exoProg(e).done}/3</span>${st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length?' <span class="tag">'+st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length+' ✗</span>':''}</button>`).join('')}
+    <button class="s" data-act="add-exo">+ Ajouter un exo</button> <button class="s" data-act="export-td">📄 PDF du TD</button></div>`;
   let main='<p class="mut">Sélectionne un exercice.</p>';
   if(ex){
     const tabs=[['orig','Original'],...Object.entries(LV)];
     main=`<div class="card"><div class="row"><b style="flex:1">${esc(td.title)} — ${esc(ex.label)}</b>
       <select id="td-subj" style="width:auto">${[['','Auto'],['maths','Maths'],['physique','Physique'],['chimie','Chimie']].map(([k,l])=>`<option value="${k}" ${(td.subject||'')===k?'selected':''}>${l}</option>`).join('')}</select>
+      <button data-act="export-exo">📄 PDF de l'exo</button>
       <button class="p" data-act="gen" data-lv="all" ${st.busy?'disabled':''}>${ex.variants.moyen?'Regénérer les 3 variantes':'Générer les 3 variantes'}</button></div>
+      <div class="mut" style="margin-top:6px">Faites ${exoProg(ex).done}/3 · générées ${exoProg(ex).gen}/3${bar(exoProg(ex).done,3)}</div>
       <div class="tabs" style="margin-top:12px">${tabs.map(([k,l])=>`<button class="${st.tab===k?'on':''}" data-act="tab" data-k="${k}">${l}${k!=='orig'&&ex.variants[k]?' ✓':''}</button>`).join('')}</div>
       ${st.tab==='orig'?vOrig(ex):vVariant(ex,st.tab)}</div>`;
   }
@@ -544,7 +581,9 @@ function vVariant(ex,k){
   const key=ex.id+k,chat=st.chat[key]||[];
   return `<div class="txt">${fmt(v.enonce)}</div>
     <div class="row"><button data-act="toggle-corr" data-key="${key}">${st.show[key]?'Masquer':'Voir'} la correction</button>
-    <button data-act="gen" data-lv="${k}" ${st.busy?'disabled':''}>Régénérer</button></div>
+    <button data-act="gen" data-lv="${k}" ${st.busy?'disabled':''}>Régénérer</button>
+    <button class="s ${ex.prog?.[k]==='done'?'on':''}" data-act="prog" data-k="${k}" data-s="done">✓ Fait</button>
+    <button class="s ${ex.prog?.[k]==='redo'?'on':''}" data-act="prog" data-k="${k}" data-s="redo">↻ À refaire</button></div>
     ${st.show[key]?`<div class="txt">${fmt(v.correction)}</div>
       ${chat.map(c=>`<div class="q">${fmt(c.q)}</div><div class="txt">${fmt(c.a)}</div>`).join('')}
       <label>Une étape pas claire ? (vide = réexplication complète)</label>
@@ -575,7 +614,7 @@ function vErrPanel(td,ex){
 function errItem(e,withLink){
   const td=st.tds.find(t=>t.id===e.tdId),ex=td?.exos.find(x=>x.id===e.exoId);
   return `<div class="err-item ${e.resolved?'res':''}">
-    <div class="row"><span class="tag">${esc(e.tag)}</span><span class="tag">${e.variant==='orig'?'Original':LV[e.variant]}</span><span class="mut">${fmtDate(e.created)}</span></div>
+    <div class="row"><span class="tag">${esc(e.tag)}</span><span class="tag">${e.variant==='orig'?'Original':LV[e.variant]}</span><span class="mut">${fmtDate(e.created)}${e.resolved?'':' · révision '+fmtDate(errDue(e))}</span></div>
     ${withLink?`<div class="mut">${esc(td?.title||'TD supprimé')} › ${esc(ex?.label||'?')}</div>`:''}
     <div>${fmt(e.text)}</div>${e.fix?`<div class="mut">➜ ${fmt(e.fix)}</div>`:''}
     <div class="row" style="margin-top:6px">${withLink&&ex?`<button class="s" data-act="goto-err" data-id="${e.id}">Ouvrir l'exo</button>`:''}
@@ -584,7 +623,12 @@ function errItem(e,withLink){
 function vCarnet(){
   const f=st.ferr;
   const list=st.errs.filter(e=>(!f.tag||e.tag===f.tag)&&(f.res==='all'||(f.res==='open')===!e.resolved)&&(!f.q||(e.text+e.fix).toLowerCase().includes(f.q.toLowerCase()))).sort((a,b)=>b.created-a.created);
-  return `${banner()}<h3>Carnet d'erreurs</h3><div class="card row">
+  const due=dueErrs();
+  const rev=due.length?`<div class="card"><b>🔁 À réviser aujourd'hui (${due.length})</b><p class="mut">Essaie de te rappeler la bonne méthode, puis vérifie.</p>${due.map(e=>{const td=st.tds.find(t=>t.id===e.tdId),ex=td?.exos.find(x=>x.id===e.exoId),k='rv'+e.id;
+    return `<div class="err-item"><div class="row"><span class="tag">${esc(e.tag)}</span><span class="mut">${esc(td?.title||'')} › ${esc(ex?.label||'?')}</span></div><div>${fmt(e.text)}</div>
+    <div class="row" style="margin-top:6px"><button class="s" data-act="toggle-corr" data-key="${k}">${st.show[k]?'Masquer':'Voir'} ce qu'il faut retenir</button><button class="s" data-act="rev-ok" data-id="${e.id}" data-ok="1">✓ Je sais</button><button class="s" data-act="rev-ok" data-id="${e.id}" data-ok="0">✗ Pas encore</button></div>
+    ${st.show[k]?`<div class="txt">${e.fix?fmt(e.fix):'<span class="mut">Pas de rappel noté : ouvre l\'exo pour revoir la correction.</span>'}</div>`:''}</div>`}).join('')}</div>`:'';
+  return `${banner()}<h3>Carnet d'erreurs</h3>${rev}<div class="card row">
     <select id="c-tag" style="width:auto"><option value="">Tous types</option>${TAGS.map(t=>`<option ${f.tag===t?'selected':''}>${t}</option>`).join('')}</select>
     <select id="c-res" style="width:auto"><option value="open" ${f.res==='open'?'selected':''}>À retenir</option><option value="done" ${f.res==='done'?'selected':''}>Maîtrisées</option><option value="all" ${f.res==='all'?'selected':''}>Toutes</option></select>
     <input id="c-q" style="flex:1;min-width:150px" placeholder="Rechercher…" value="${esc(f.q)}"></div>
@@ -859,7 +903,7 @@ const A={
     if(!(ex.text||'').trim()){st.err="Le texte brut est vide : utilise « Lire avec l'image ».";return render()}
     await run('Mise en LaTeX…',async()=>{await toLatex(td,ex)});
   },
-  'preset-vgemini'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-vmodel').value='gemini-2.5-flash'},
+  'preset-vgemini'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-vmodel').value='gemini-3.8-flash'},
   'preset-vopenai'(){$('#s-vprov').value='openai';$('#s-vbase').value='https://api.openai.com/v1';$('#s-vmodel').value='gpt-4.1'},
   'save-sb'(){
     localStorage.setItem('mattexo.settings',JSON.stringify({...settings(),sbUrl:v('s-sburl').trim(),sbKey:v('s-sbkey').trim()}));
@@ -878,8 +922,8 @@ const A={
   async 'sb-logout'(){const c=RB.cli();if(c) await c.auth.signOut();st.sbUser=null;st.sync='';render()},
   async sync(){await run('Synchronisation…',()=>syncNow(false))},
   'preset-gemini'(){
-    $('#s-prov').value='openai';$('#s-base').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-model').value='gemini-2.5-flash';
-    $('#s-eff').value='';$('#s-temp').value='';
+    $('#s-prov').value='openai';$('#s-base').value='https://generativelanguage.googleapis.com/v1beta/openai';$('#s-model').value='gemini-3.8-flash';
+    $('#s-eff').value='low';$('#s-temp').value='';
   },
   'preset-groq'(){
     $('#s-prov').value='openai';$('#s-base').value='https://api.groq.com/openai/v1';$('#s-model').value='openai/gpt-oss-120b';
@@ -890,6 +934,13 @@ const A={
     const exoId=v('f-exo'),e={id:uid(),tdId:st.tdId,exoId,variant:v('f-var'),tag:v('f-tag'),text,fix:v('f-fix')?.trim()||'',created:Date.now(),resolved:false};
     st.errs.push(e);await DB.put('errs',e);render();
   },
+  async prog(d){const ex=curExo();ex.prog=ex.prog||{};ex.prog[d.k]=ex.prog[d.k]===d.s?'':d.s;await saveTd(curTd());render()},
+  async 'rev-ok'(d){const e=st.errs.find(x=>x.id===d.id);
+    if(d.ok==='1'){e.box=(e.box||0)+1;if(e.box>=INTERVALS.length){e.resolved=true}else e.due=Date.now()+INTERVALS[e.box]*DAY}
+    else{e.box=0;e.due=Date.now()+DAY}
+    await DB.put('errs',e);render()},
+  'export-exo'(){printDoc(curTd(),[curExo()])},
+  'export-td'(){const td=curTd();printDoc(td,td.exos)},
   async 'toggle-err'(d){const e=st.errs.find(x=>x.id===d.id);e.resolved=!e.resolved;await DB.put('errs',e);render()},
   async 'del-err'(d){st.errs=st.errs.filter(x=>x.id!==d.id);await DB.del('errs',d.id);render()},
   'goto-err'(d){const e=st.errs.find(x=>x.id===d.id);st.tdId=e.tdId;st.exoId=e.exoId;st.tab=e.variant;st.view='td';render()},
