@@ -26,7 +26,7 @@ body{margin:0;background:var(--bg);color:var(--tx);font:var(--fs,15px)/1.55 syst
 header{display:flex;align-items:center;gap:12px;padding:calc(12px + env(safe-area-inset-top)) 18px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
 header h1{font-size:18px;margin:0;cursor:pointer}
 header h1 span{color:var(--ac)}
-nav{margin-left:auto;display:flex;gap:6px}
+nav{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 button,.btn{background:var(--card2);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font:inherit;cursor:pointer}
 button:hover{border-color:var(--ac)}
 button.p{background:var(--ac);border-color:var(--ac);color:#111;font-weight:600}
@@ -59,6 +59,39 @@ main{padding:18px;max-width:1500px;margin:auto}
 pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;font-size:12px;overflow-x:auto}
 .bar{height:6px;background:var(--card2);border-radius:6px;overflow:hidden;margin:4px 0}
 .bar i{display:block;height:100%;background:var(--ok)}
+
+:root{--gold:#d9b45a}
+:root[data-theme=light]{--gold:#9a7418}
+@media(prefers-color-scheme:light){:root:not([data-theme]){--gold:#9a7418}}
+.grid.wide{grid-template-columns:200px minmax(0,1fr) 440px}
+.dock{max-height:calc(100vh - 80px);overflow:auto}
+.fab,.dock-x{display:none}
+.book{display:grid;grid-template-columns:minmax(250px,330px) minmax(0,1fr);border:2px solid var(--gold);border-radius:18px;background:var(--card2);padding:8px}
+.book.one{grid-template-columns:1fr;padding:6px;border-radius:14px}
+.bk-l,.bk-r{background:var(--card);padding:16px 18px;min-height:420px;border:1px solid var(--line)}
+.bk-l{border-radius:12px 0 0 12px;box-shadow:inset -16px 0 20px -14px rgba(0,0,0,.5)}
+.bk-r{border-radius:0 12px 12px 0;border-left:0;box-shadow:inset 16px 0 20px -14px rgba(0,0,0,.5)}
+.book.one .bk-l,.book.one .bk-r{border-radius:10px;min-height:0;box-shadow:none;border-left:1px solid var(--line)}
+.bk-title{font:600 22px/1.25 Georgia,'Times New Roman',serif;margin:0 0 4px}
+.sk-item{display:block;width:100%;text-align:left;border:0;border-left:3px solid transparent;border-radius:0 8px 8px 0;background:transparent;padding:6px 10px;margin:1px 0}
+.sk-item:hover,.sk-item.on{background:var(--card2);border-left-color:var(--gold)}
+.sk-item.sub{margin-left:18px;width:calc(100% - 18px);font-size:.93em;color:var(--mut)}
+.sk-item.sub.on{color:var(--tx)}
+.sk-sec{border-left:3px solid var(--line);padding:2px 0 2px 12px;margin:14px 0}
+.sk-sec h4{margin:0 0 4px;font-size:.95em}
+.sk-sec.when{border-color:var(--ac)}.sk-sec.stp{border-color:var(--gold)}.sk-sec.lim{border-color:var(--ko)}.sk-sec.exa{border-color:var(--ok)}
+.sk-sec ol{margin:4px 0;padding-left:22px}.sk-sec li{margin:4px 0}
+.chip{font-size:12px;border:1px solid var(--line);border-radius:20px;padding:2px 10px;background:var(--card2);margin:2px 4px 2px 0}
+.chip:hover{border-color:var(--gold)}
+.chaps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.chaps button.on{border-color:var(--gold);color:var(--gold)}
+@media(max-width:800px){.book{grid-template-columns:1fr}.bk-l,.bk-r{border-radius:10px;border-left:1px solid var(--line);box-shadow:none;min-height:0}.bk-l{margin-bottom:8px}}
+@media(max-width:1000px){
+  .grid.wide{grid-template-columns:1fr}
+  .dock{position:fixed;left:0;right:0;bottom:0;top:38vh;z-index:30;background:var(--bg);border-top:2px solid var(--gold);border-radius:14px 14px 0 0;padding:10px 12px calc(12px + env(safe-area-inset-bottom));max-height:none;box-shadow:0 -10px 30px rgba(0,0,0,.45)}
+  .dock-x{display:inline-block}
+  .fab{display:block;position:fixed;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:25;border-radius:999px;padding:10px 16px;background:var(--gold);border-color:var(--gold);color:#111;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+}
 #printroot{display:none}
 @media print{
   body{background:#fff!important;color:#000!important}
@@ -68,6 +101,7 @@ pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;
   #printroot h3{font-size:13pt;margin:14px 0 4px}#printroot h4{font-size:11pt;margin:8px 0 3px;color:#333}
   .pv-ex{break-before:page}.pv-ex:first-of-type{break-before:auto}
   .pv-c{border-left:3px solid #888;padding-left:10px}
+  .pv-sk{break-inside:avoid;margin:10px 0}.pv-sub{margin-left:18px;border-left:2px solid #888;padding-left:10px}
 }
 </style>
 </head>
@@ -76,6 +110,7 @@ pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;
   <h1 data-act="home">Matt<span>Exo</span></h1>
   <nav>
     <button data-act="home">TD</button>
+    <button data-act="book">📖 Skill Hunter</button>
     <button data-act="carnet">Carnet d'erreurs</button>
     <button data-act="settings">Réglages</button>
     <button data-act="theme" title="Thème clair / sombre">◐</button>
@@ -499,7 +534,7 @@ function splitExos(text,starts=[0]){
 }
 
 /* ---------- state ---------- */
-const st={view:'home',tdId:null,exoId:null,tab:'orig',busy:'',err:'',show:{},chat:{},tds:[],errs:[],ferr:{tag:'',q:'',res:'open'},limits:null};
+const st={view:'home',tdId:null,exoId:null,tab:'orig',busy:'',err:'',show:{},chat:{},tds:[],errs:[],ferr:{tag:'',q:'',res:'open'},limits:null,rt:'errs',skId:null,skQ:'',skF:'all',skEdit:null,skNew:null,clr:[]};
 try{st.limits=JSON.parse(localStorage.getItem('mattexo.limits')||'null')}catch{}
 try{st.tpm=JSON.parse(localStorage.getItem('mattexo.tpm')||'{}')}catch{st.tpm={}}
 const curTd=()=>st.tds.find(t=>t.id===st.tdId);
@@ -507,9 +542,15 @@ const curExo=()=>curTd()?.exos.find(e=>e.id===st.exoId);
 const saveTd=td=>DB.put('tds',td);
 
 /* ---------- render ---------- */
+const DRAFT=['plan','mine','f-text','f-fix','ask'];
 function render(){
-  const a=$('#app');
-  a.innerHTML=({home:vHome,td:vTd,carnet:vCarnet,settings:vSettings})[st.view]()+limFoot();
+  const a=$('#app'),ctx=[st.view,st.tdId,st.exoId,st.tab].join('|'),keep={};
+  // les brouillons (plan, réponse, erreur en cours) survivent quand on feuillette le carnet de méthodes
+  if(st._ctx===ctx) DRAFT.forEach(id=>{const e=document.getElementById(id);if(e) keep[id]=e.value});
+  st._ctx=ctx;
+  a.innerHTML=({home:vHome,td:vTd,carnet:vCarnet,settings:vSettings,skills:vSkills})[st.view]()+limFoot();
+  DRAFT.forEach(id=>{const e=document.getElementById(id);if(e&&keep[id]&&!st.clr.includes(id)) e.value=keep[id]});
+  st.clr=[];
   const sb=$('#syncbtn');if(sb) sb.hidden=!settings().sbUrl;
   math();
 }
@@ -545,8 +586,8 @@ function vHome(){
     return (T.t?`<div class="card"><b>Total : ${pct(T.d,T.t)} %</b> <span class="mut">${T.d}/${T.t} variantes faites</span>${bar(T.d,T.t)}</div>`:'')+(n?`<div class="card row"><b style="flex:1">🔁 ${n} erreur(s) à réviser aujourd'hui</b><button class="p" data-act="carnet">Réviser</button></div>`:'')})()}
   <h3>Mes TD</h3>
   ${st.tds.length?st.tds.sort((a,b)=>b.created-a.created).map(t=>`
-    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.subject?esc(t.subject)+' · ':''}${t.exos.length} exo(s) · ${tdProg(t).done}/${tdProg(t).tot} faites (${pct(tdProg(t).done,tdProg(t).tot)} %) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s)</div>${bar(tdProg(t).done,tdProg(t).tot)}</div>
-    <button data-act="open-td" data-id="${t.id}">Ouvrir</button><button class="d" data-act="del-td" data-id="${t.id}">✕</button></div>`).join(''):'<p class="mut">Aucun TD pour l\'instant.</p>'}`;
+    <div class="card row"><div style="flex:1"><b>${esc(t.title)}</b><div class="mut">${t.subject?esc(t.subject)+' · ':''}${t.exos.length} exo(s) · ${tdProg(t).done}/${tdProg(t).tot} faites (${pct(tdProg(t).done,tdProg(t).tot)} %) · ${st.errs.filter(e=>e.tdId===t.id&&!e.resolved).length} erreur(s) ouverte(s) · ${(t.skills||[]).length} méthode(s)</div>${bar(tdProg(t).done,tdProg(t).tot)}</div>
+    <button data-act="open-td" data-id="${t.id}">Ouvrir</button><button data-act="open-book" data-id="${t.id}" title="Skill Hunter de ce chapitre">📖</button><button class="d" data-act="del-td" data-id="${t.id}">✕</button></div>`).join(''):'<p class="mut">Aucun TD pour l\'instant.</p>'}`;
 }
 
 function vTd(){
@@ -560,13 +601,17 @@ function vTd(){
     main=`<div class="card"><div class="row"><b style="flex:1">${esc(td.title)} — ${esc(ex.label)}</b>
       <select id="td-subj" style="width:auto">${[['','Auto'],['maths','Maths'],['physique','Physique'],['chimie','Chimie']].map(([k,l])=>`<option value="${k}" ${(td.subject||'')===k?'selected':''}>${l}</option>`).join('')}</select>
       <button data-act="export-exo">📄 PDF de l'exo</button>
+      <button data-act="sk-extract" data-scope="exo" ${st.busy?'disabled':''}>📖 Extraire les méthodes</button>
       <button class="p" data-act="gen" data-lv="all" ${st.busy?'disabled':''}>${ex.variants.moyen?'Regénérer les 3 variantes':'Générer les 3 variantes'}</button></div>
       <div class="mut" style="margin-top:6px">Faites ${exoProg(ex).done}/3 · générées ${exoProg(ex).gen}/3${bar(exoProg(ex).done,3)}</div>
       <div class="tabs" style="margin-top:12px">${tabs.map(([k,l])=>`<button class="${st.tab===k?'on':''}" data-act="tab" data-k="${k}">${l}${k!=='orig'&&ex.variants[k]?' ✓':''}</button>`).join('')}</div>
+      ${(()=>{const L=(td.skills||[]).filter(s=>(s.exos||[]).includes(ex.id));return L.length?`<div class="row" style="margin:-4px 0 10px"><span class="mut">📖 Méthodes de cet exo :</span>${L.map(s=>`<button class="chip" data-act="sk-peek" data-id="${s.id}">${esc(s.title)}</button>`).join('')}</div>`:''})()}
       ${st.tab==='orig'?vOrig(ex):vVariant(ex,st.tab)}</div>`;
   }
   return `${banner()}<div class="row" style="margin-bottom:10px"><button data-act="home">← TD</button></div>
-    <div class="grid">${left}<div>${main}</div><div class="sticky">${ex?vErrPanel(td,ex):''}</div></div>`;
+    <div class="grid ${st.rt==='skills'?'wide':''}">${left}<div>${main}</div><div class="sticky ${st.rt==='skills'?'dock':''}">
+      <div class="tabs"><button class="${st.rt!=='skills'?'on':''}" data-act="rt" data-k="errs">Carnet d'erreurs</button><button class="${st.rt==='skills'?'on':''}" data-act="rt" data-k="skills">📖 Skill Hunter${(td.skills||[]).length?' ('+td.skills.length+')':''}</button>${st.rt==='skills'?'<button class="s dock-x" data-act="rt" data-k="errs">✕ Fermer</button>':''}</div>
+      ${st.rt==='skills'?vBook(td,true):(ex?vErrPanel(td,ex):'')}</div></div>${st.rt!=='skills'?'<button class="fab" data-act="rt" data-k="skills">📖 Méthodes</button>':''}`;
 }
 function exoImgs(td,ex){
   if(ex.imgs?.length) return ex.imgs;
@@ -791,6 +836,165 @@ async function syncNow(silent){
   }finally{syncing=false}
 }
 
+/* ---------- Skill Hunter : un carnet de méthodes par chapitre (stocké dans le TD : td.skills) ---------- */
+const nrm=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const skById=(td,id)=>(td.skills||[]).find(x=>x.id===id);
+const skSteps=t=>String(t||'').split('\n').map(l=>l.replace(/^\s*(?:[-•*]|\d+[.)])\s*/,'').trim()).filter(Boolean);
+function skList(td){
+  const all=td.skills||[],q=nrm(st.skQ),f=st.skF==='exo'&&st.exoId;
+  const hit=x=>(!f||(x.exos||[]).includes(st.exoId))&&(!q||nrm([x.title,x.when,x.steps,x.restr,x.example].join(' ')).includes(q));
+  const rows=[];
+  for(const g of all.filter(x=>x.kind==='general')){
+    const kids=all.filter(c=>c.kind==='precise'&&c.parent===g.id).filter(hit);
+    if(hit(g)||kids.length){rows.push({s:g});kids.forEach(c=>rows.push({s:c,sub:1}))}
+  }
+  all.filter(x=>x.kind==='precise'&&!all.some(g=>g.id===x.parent&&g.kind==='general')&&hit(x)).forEach(c=>rows.push({s:c,orphan:1}));
+  return rows;
+}
+function vSkIndex(td,compact){
+  const all=td.skills||[],m=all.filter(x=>x.done).length,ex=curExo(),rows=skList(td);
+  return `<h3 class="bk-title">Skill Hunter</h3><div class="mut">${esc(td.title)}</div>
+    <div class="mut" style="margin-top:6px">${m}/${all.length} méthodes maîtrisées</div>${bar(m,all.length)}
+    <input id="sk-q" placeholder="Chercher une méthode…" value="${esc(st.skQ)}" style="margin:8px 0">
+    <div class="row"><button class="s ${st.skF!=='exo'?'on':''}" data-act="sk-f" data-k="all">Tout le chapitre</button>
+      <button class="s ${st.skF==='exo'?'on':''}" data-act="sk-f" data-k="exo" ${ex?'':'disabled'}>${ex?'Cet exo : '+esc(ex.label):'Cet exo'}</button></div>
+    <div class="row" style="margin:8px 0"><button class="s p" data-act="sk-extract" data-scope="td" ${st.busy?'disabled':''}>✨ Extraire du chapitre</button>
+      <button class="s" data-act="sk-extract" data-scope="exo" ${st.busy||!ex?'disabled':''}>✨ De cet exo</button>
+      <button class="s" data-act="sk-new">+ À la main</button></div>
+    ${rows.length?rows.map(r=>`<button class="sk-item ${r.sub?'sub':''} ${r.s.id===st.skId?'on':''}" data-act="sk-open" data-id="${r.s.id}">${r.s.done?'✓ ':''}${fmt(r.s.title)}${r.orphan?' <span class="mut">· cas précis</span>':''}</button>`).join('')
+      :`<p class="mut">${all.length?'Aucune méthode ne correspond.':"Carnet vide. « Extraire » lit les énoncés et les corrections de ce chapitre pour en tirer des méthodes générales et des cas précis. Tu peux aussi les écrire toi-même."}</p>`}
+    ${all.length?`<details style="margin-top:12px"><summary class="mut">Plus</summary><p class="row"><button class="s" data-act="sk-print">📄 PDF du carnet</button><button class="s d" data-act="sk-clear">Vider ce carnet</button></p></details>`:''}`;
+}
+function vSkPage(td,s,compact){
+  const all=td.skills||[],par=s.kind==='precise'&&all.find(x=>x.id===s.parent&&x.kind==='general'),kids=s.kind==='general'?all.filter(c=>c.kind==='precise'&&c.parent===s.id):[];
+  const exs=(s.exos||[]).map(id=>td.exos.find(e=>e.id===id)).filter(Boolean),stp=skSteps(s.steps);
+  return `${compact?'<button class="s" data-act="sk-close">← Sommaire</button>':''}
+    <div class="row" style="margin-top:${compact?10:0}px"><span class="tag">${s.kind==='precise'?'Cas précis':'Méthode générale'}</span>${s.done?'<span class="tag">✓ maîtrisée</span>':''}
+      ${par?`<button class="chip" data-act="sk-open" data-id="${par.id}">↳ cas de « ${esc(par.title)} »</button>`:''}</div>
+    <h2 class="bk-title" style="margin-top:8px">${fmt(s.title)}</h2>
+    ${s.when?`<div class="sk-sec when"><h4>Quand l'utiliser</h4>${fmt(s.when)}</div>`:''}
+    ${stp.length?`<div class="sk-sec stp"><h4>Étapes</h4><ol>${stp.map(x=>`<li>${fmt(x)}</li>`).join('')}</ol></div>`:''}
+    ${s.restr?`<div class="sk-sec lim"><h4>Restrictions et pièges</h4>${fmt(s.restr)}</div>`:''}
+    ${s.example?`<div class="sk-sec exa"><h4>Exemple</h4>${fmt(s.example)}</div>`:''}
+    ${kids.length?`<div class="sk-sec"><h4>Cas précis (${kids.length})</h4>${kids.map(c=>`<button class="chip" data-act="sk-open" data-id="${c.id}">${esc(c.title)}</button>`).join('')}</div>`:''}
+    ${exs.length?`<div class="mut">Vu dans :</div><div>${exs.map(e=>`<button class="chip" data-act="sk-goto" data-id="${e.id}">${esc(e.label)}</button>`).join('')}</div>`:''}
+    <div class="row" style="margin-top:14px"><button class="s ${s.done?'on':''}" data-act="sk-done" data-id="${s.id}">${s.done?'Maîtrisée ✓':'Marquer maîtrisée'}</button>
+      <button class="s" data-act="sk-edit">Modifier</button>${s.kind==='general'?`<button class="s" data-act="sk-new" data-parent="${s.id}">+ Cas précis</button>`:''}
+      <button class="s d" data-act="sk-del" data-id="${s.id}">Supprimer</button></div>`;
+}
+function vSkEdit(td,s){
+  const n=st.skEdit==='new',c=n?(st.skNew||{}):(s||{}),g=(td.skills||[]).filter(x=>x.kind==='general'&&x.id!==c.id);
+  return `<h3 class="bk-title">${n?'Nouvelle méthode':'Modifier la méthode'}</h3>
+    <label>Type</label><select id="sk-kind"><option value="general" ${c.kind!=='precise'?'selected':''}>Méthode générale</option><option value="precise" ${c.kind==='precise'?'selected':''}>Cas précis (avec restrictions)</option></select>
+    <label>Rattaché à (cas précis uniquement)</label><select id="sk-parent"><option value="">—</option>${g.map(x=>`<option value="${x.id}" ${c.parent===x.id?'selected':''}>${esc(x.title)}</option>`).join('')}</select>
+    <label>Titre (une action : « Étudier… », « Montrer que… »)</label><input id="sk-title" value="${esc(c.title||'')}">
+    <label>Quand l'utiliser (comment la reconnaître dans un énoncé)</label><textarea id="sk-when" style="min-height:60px">${esc(c.when||'')}</textarea>
+    <label>Étapes (une par ligne)</label><textarea id="sk-steps" style="min-height:100px">${esc(c.steps||'')}</textarea>
+    <label>Restrictions et pièges (conditions à vérifier)</label><textarea id="sk-restr" style="min-height:60px">${esc(c.restr||'')}</textarea>
+    <label>Exemple</label><textarea id="sk-ex" style="min-height:80px">${esc(c.example||'')}</textarea>
+    <label>Exercices liés</label>${td.exos.map(e=>`<label class="row" style="margin:2px 0"><input type="checkbox" class="sk-src" value="${e.id}" style="width:auto" ${(c.exos||[]).includes(e.id)?'checked':''}> ${esc(e.label)}</label>`).join('')}
+    <p class="row"><button class="p" data-act="sk-save">Enregistrer</button><button data-act="sk-cancel">Annuler</button></p>`;
+}
+function vBook(td,compact){
+  const s=skById(td,st.skId),page=st.skEdit?vSkEdit(td,s):s?vSkPage(td,s,compact):'<p class="mut">Choisis une méthode dans le sommaire.</p>';
+  if(compact) return `<div class="book one">${(s||st.skEdit)?`<div class="bk-r">${page}</div>`:`<div class="bk-l">${vSkIndex(td,true)}</div>`}</div>`;
+  return `<div class="book"><div class="bk-l">${vSkIndex(td,false)}</div><div class="bk-r">${page}</div></div>`;
+}
+function vSkills(){
+  if(!st.tds.length) return `${banner()}<p class="mut">Importe d'abord un TD : chaque chapitre a son propre Skill Hunter.</p>`;
+  const td=curTd();if(!td) return vHome();
+  const chaps=st.tds.slice().sort((a,b)=>a.created-b.created);
+  return `${banner()}<div class="row" style="margin-bottom:10px"><button data-act="back-td">← Exercices</button><span class="mut">Un carnet par chapitre :</span></div>
+    <div class="chaps">${chaps.map(t=>`<button class="${t.id===td.id?'on':''}" data-act="sk-chap" data-id="${t.id}">${esc(t.title)} <span class="mut">${(t.skills||[]).length}</span></button>`).join('')}</div>
+    ${vBook(td,false)}`;
+}
+function printSkills(td){
+  const all=td.skills||[];
+  const one=x=>`<div class="pv-sk"><h3>${esc(x.title)}</h3>${x.when?`<h4>Quand l'utiliser</h4><div>${fmt(x.when)}</div>`:''}${skSteps(x.steps).length?`<h4>Étapes</h4><ol>${skSteps(x.steps).map(t=>`<li>${fmt(t)}</li>`).join('')}</ol>`:''}${x.restr?`<h4>Restrictions et pièges</h4><div>${fmt(x.restr)}</div>`:''}${x.example?`<h4>Exemple</h4><div>${fmt(x.example)}</div>`:''}</div>`;
+  const gens=all.filter(x=>x.kind==='general'),orph=all.filter(x=>x.kind==='precise'&&!gens.some(g=>g.id===x.parent));
+  const body=gens.map(g=>`<section>${one(g)}${all.filter(c=>c.kind==='precise'&&c.parent===g.id).map(c=>`<div class="pv-sub">${one(c)}</div>`).join('')}</section>`).join('')+orph.map(one).join('');
+  const r=$('#printroot');
+  r.innerHTML=`<h1>Skill Hunter — ${esc(td.title)}</h1><p>MattExo · ${new Date().toLocaleDateString('fr-FR')}</p>`+body;
+  math();window.onafterprint=()=>{r.innerHTML=''};setTimeout(()=>window.print(),500);
+}
+const skillPrompt=(td,ex,exist)=>{
+  const cap=(x,n)=>{x=String(x||'');return x.length>n?x.slice(0,n)+' […]':x};
+  const vs=LK.filter(k=>ex.variants[k]).map(k=>`### Variante « ${LV[k]} »\nÉnoncé : ${cap(ex.variants[k].enonce,1500)}\nCorrection : ${cap(ex.variants[k].correction,3500)}`).join('\n\n');
+  return `Tu construis le « Skill Hunter » d'un élève de prépa : un carnet de méthodes pour le chapitre « ${td.title} ». L'élève l'ouvrira devant un exercice qu'il ne sait pas démarrer.
+
+Voici un exercice du TD${vs?' et les corrections détaillées de ses variantes (mêmes méthodes)':''}.${vs?'':" Il n'y a pas encore de correction : résous d'abord l'exercice toi-même, rigoureusement, puis extrais les méthodes."}
+
+<<<ENONCE
+${cap((ex.clean||ex.text||'').trim(),6000)}
+ENONCE>>>
+${ex.reasoning?`\nRaisonnement commun : ${cap(ex.reasoning,1500)}\n`:''}${vs?`\n${vs}\n`:''}
+Extrais TOUTES les méthodes mobilisées, sur deux niveaux :
+- TYPE general : méthode générale, réutilisable hors de cet exercice. Le titre est une action (« Étudier la convergence d'une série par comparaison »), pas un titre de cours.
+- TYPE precise : cas particulier ou version restreinte d'une méthode générale, avec ses propres conditions (une hypothèse non vérifiée, une forme particulière des données, une variante de calcul). PARENT = titre EXACT de la méthode générale (déjà au carnet ou créée dans ta réponse).
+Pour chaque méthode :
+QUAND : comment la reconnaître dans un énoncé (mots-clés, forme de l'objet, question posée).
+ETAPES : étapes ordonnées, une par ligne commençant par « - », chaque étape sur UNE seule ligne.
+RESTRICTIONS : conditions d'application à vérifier, pièges, cas où la méthode échoue et quoi faire alors.
+EXEMPLE : mini-exemple court et résolu inspiré de l'exercice (énoncé en une phrase, puis application des étapes).
+Pas de méthode triviale, pas de simple fait de cours.
+
+Méthodes déjà au carnet (ne les duplique pas ; si l'exercice apporte une restriction ou un cas nouveau, crée un TYPE precise rattaché à son titre exact) :
+${exist||'(aucune)'}
+
+Format STRICT (rien en dehors de ces blocs) :
+===METHODE===
+TYPE: general
+PARENT:
+TITRE: ...
+QUAND: ...
+ETAPES:
+- ...
+RESTRICTIONS: ...
+EXEMPLE: ...
+(un bloc ===METHODE=== par méthode)`;
+};
+function parseSkills(t){
+  t=String(t||'').replace(/```[a-z]*\n?/gi,'');
+  const blocks=t.split(/^[ \t>#*_-]*={2,}[ \t]*M[ÉE]THODE[ \t]*={2,}[ \t*_]*$/gim).slice(1);
+  return blocks.map(b=>{
+    const ms=[...b.matchAll(/^[ \t*_#>-]*(TYPE|PARENT|TITRE|QUAND|[ÉE]TAPES|RESTRICTIONS|EXEMPLE)[ \t*_]*:[ \t*_]*/gim)],o={};
+    ms.forEach((m,i)=>{o[NORM(m[1])]=b.slice(m.index+m[0].length,i+1<ms.length?ms[i+1].index:undefined).replace(/^[ \t]*={2,}.*$/gm,'').trim()});
+    return {kind:/pr[ée]cis/i.test(o.TYPE||'')?'precise':'general',parent:(o.PARENT||'').split('\n')[0].replace(/^\*+|\*+$/g,'').trim(),
+      title:(o.TITRE||'').split('\n')[0].replace(/^\*+|\*+$/g,'').trim(),when:o.QUAND||'',steps:o.ETAPES||'',restr:o.RESTRICTIONS||'',example:o.EXEMPLE||''};
+  }).filter(x=>x.title&&(x.steps||x.when));
+}
+function skMerge(td,ex,items){
+  const all=td.skills;let n=0;
+  const find=t=>all.find(x=>nrm(x.title)===nrm(t));
+  const findG=t=>{const q=nrm(t);if(!q) return null;return all.find(x=>x.kind==='general'&&nrm(x.title)===q)||all.find(x=>x.kind==='general'&&(nrm(x.title).includes(q)||q.includes(nrm(x.title))))||null};
+  items.sort((a,b)=>(a.kind==='precise')-(b.kind==='precise'));
+  for(const it of items){
+    const old=find(it.title);
+    if(old){
+      if(!(old.exos||[]).includes(ex.id)) (old.exos??=[]).push(ex.id);
+      for(const k of ['when','steps','restr','example']) if(!old[k]&&it[k]) old[k]=it[k];
+      continue;
+    }
+    const par=it.kind==='precise'?findG(it.parent):null;
+    all.push({id:uid(),kind:it.kind,parent:par?par.id:null,title:it.title,when:it.when,steps:it.steps,restr:it.restr,example:it.example,exos:[ex.id],created:Date.now(),done:false});
+    n++;
+  }
+  return n;
+}
+async function skExtract(td,ex){
+  td.skills??=[];
+  const exist=td.skills.map(x=>`- [${x.kind}] ${x.title}`).join('\n');
+  let items=[];
+  for(let t=0;t<2&&!items.length;t++){
+    const raw=await callAI([{role:'system',content:sys()},{role:'user',content:skillPrompt(td,ex,exist)+(t?"\n\nIMPORTANT : respecte STRICTEMENT le format (blocs ===METHODE=== avec TYPE:, PARENT:, TITRE:, QUAND:, ETAPES:, RESTRICTIONS:, EXEMPLE:).":'')}]);
+    items=parseSkills(raw);
+  }
+  if(!items.length) throw new Error(`${ex.label} : réponse illisible, réessaie.`);
+  const n=skMerge(td,ex,items);
+  await saveTd(td);
+  return n;
+}
+
 /* ---------- actions ---------- */
 const v=id=>$('#'+id)?.value;
 async function run(label,fn){
@@ -799,6 +1003,54 @@ async function run(label,fn){
   st.busy='';render();
 }
 const A={
+  book(){
+    if(!curTd()) st.tdId=(st.tds.slice().sort((a,b)=>b.created-a.created)[0]||{}).id||null;
+    if(curTd()&&!curExo()) st.exoId=curTd().exos[0]?.id;
+    st.skId=null;st.skEdit=null;st.view='skills';render()},
+  'open-book'(d){st.tdId=d.id;st.exoId=curTd().exos[0]?.id;st.skId=null;st.skEdit=null;st.skQ='';st.skF='all';st.view='skills';render()},
+  'back-td'(){st.view=curTd()?'td':'home';render()},
+  'sk-chap'(d){st.tdId=d.id;st.exoId=curTd().exos[0]?.id;st.skId=null;st.skEdit=null;st.skQ='';st.skF='all';render()},
+  rt(d){st.rt=d.k;render()},
+  'sk-peek'(d){st.rt='skills';st.skId=d.id;st.skEdit=null;render()},
+  'sk-open'(d){st.skId=d.id;st.skEdit=null;render()},
+  'sk-close'(){st.skId=null;st.skEdit=null;render()},
+  'sk-f'(d){st.skF=d.k;render()},
+  'sk-goto'(d){st.exoId=d.id;st.tab='orig';st.view='td';render()},
+  'sk-new'(d){st.skEdit='new';st.skNew={kind:d.parent?'precise':'general',parent:d.parent||'',exos:st.exoId?[st.exoId]:[]};render()},
+  'sk-edit'(){st.skEdit=st.skId;render()},
+  'sk-cancel'(){st.skEdit=null;st.skNew=null;render()},
+  async 'sk-save'(){
+    const td=curTd(),title=(v('sk-title')||'').trim();
+    if(!title){st.err='Donne un titre à la méthode.';return render()}
+    st.err='';
+    const kind=v('sk-kind'),f={kind,parent:kind==='precise'?(v('sk-parent')||null):null,title,when:(v('sk-when')||'').trim(),steps:(v('sk-steps')||'').trim(),restr:(v('sk-restr')||'').trim(),example:(v('sk-ex')||'').trim(),
+      exos:[...document.querySelectorAll('.sk-src:checked')].map(x=>x.value)};
+    td.skills??=[];
+    if(st.skEdit==='new'){const x={id:uid(),created:Date.now(),done:false,...f};td.skills.push(x);st.skId=x.id}
+    else Object.assign(skById(td,st.skEdit),f);
+    st.skEdit=null;st.skNew=null;await saveTd(td);render()},
+  async 'sk-done'(d){const td=curTd(),x=skById(td,d.id);x.done=!x.done;await saveTd(td);render()},
+  async 'sk-del'(d){
+    if(!confirm('Supprimer cette méthode ?')) return;
+    const td=curTd();td.skills=td.skills.filter(x=>x.id!==d.id);td.skills.forEach(x=>{if(x.parent===d.id) x.parent=null});
+    st.skId=null;await saveTd(td);render()},
+  async 'sk-clear'(){
+    if(!confirm('Vider tout le carnet de ce chapitre ?')) return;
+    const td=curTd();td.skills=[];st.skId=null;await saveTd(td);render()},
+  'sk-print'(){printSkills(curTd())},
+  async 'sk-extract'(d){
+    const td=curTd(),list=(d.scope==='exo'?[curExo()].filter(Boolean):td.exos).filter(e=>((e.clean||'')+(e.text||'')).trim());
+    if(!list.length){st.err="Aucun énoncé exploitable : importe ou écris l'énoncé de l'exercice.";return render()}
+    if(st.view==='td') st.rt='skills';
+    await run('Skill Hunter…',async()=>{
+      let added=0,fail=null;
+      for(let i=0;i<list.length&&!fail;i++){
+        st.busy=`Skill Hunter : ${list[i].label} (${i+1}/${list.length})…`;render();
+        try{added+=await skExtract(td,list[i])}catch(e){fail=e}
+      }
+      if(fail) throw new Error(fail.message+(added?` — ${added} méthode(s) déjà ajoutée(s) au carnet.`:''));
+    });
+  },
   home(){st.view='home';render()},
   carnet(){st.view='carnet';render()},
   settings(){st.view='settings';render()},
@@ -893,6 +1145,7 @@ const A={
   },
   async explain(d){
     const ex=curExo(),vr=ex.variants[d.lv],key=ex.id+d.lv,q=v('ask')?.trim()||'Réexplique cette correction plus lentement, étape par étape, en expliquant pourquoi on fait chaque choix.';
+    st.clr=['ask'];
     await run('Explication…',async()=>{
       const a=await callAI([{role:'system',content:sys()},{role:'user',content:`Énoncé :\n${vr.enonce}\n\nCorrection :\n${vr.correction}\n\nMa question : ${q}`}]);
       (st.chat[key]=st.chat[key]||[]).push({q,a});
@@ -959,7 +1212,7 @@ const A={
   async 'add-err'(){
     const text=v('f-text')?.trim();if(!text)return;
     const exoId=v('f-exo'),e={id:uid(),tdId:st.tdId,exoId,variant:v('f-var'),tag:v('f-tag'),text,fix:v('f-fix')?.trim()||'',created:Date.now(),resolved:false};
-    st.errs.push(e);await DB.put('errs',e);render();
+    st.errs.push(e);await DB.put('errs',e);st.clr=['f-text','f-fix'];render();
   },
   async plan(d){
     const td=curTd(),ex=curExo(),k=d.k,plan=v('plan')?.trim();
@@ -1000,6 +1253,7 @@ document.addEventListener('change',async e=>{
   const t=e.target;
   if(t.id==='c-tag'){st.ferr.tag=t.value;render()}
   if(t.id==='c-res'){st.ferr.res=t.value;render()}
+  if(t.id==='sk-td'){st.tdId=t.value;render()}
   if(t.id==='td-subj'){const td=curTd();td.subject=t.value;await saveTd(td)}
   if(t.id==='x-img'&&t.files[0]){
     try{const ex=curExo();(ex.imgs??=[]).push(await imgData(t.files[0]));await saveTd(curTd());st.showImgs=true;render()}
@@ -1013,6 +1267,7 @@ document.addEventListener('change',async e=>{
   }
 });
 document.addEventListener('input',e=>{
+  if(e.target.id==='sk-q'){st.skQ=e.target.value;const p=e.target.selectionStart;render();const i=$('#sk-q');i.focus();i.setSelectionRange(p,p)}
   if(e.target.id==='c-q'){st.ferr.q=e.target.value;const p=e.target.selectionStart;render();const i=$('#c-q');i.focus();i.setSelectionRange(p,p)}
 });
 
