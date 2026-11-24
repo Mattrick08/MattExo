@@ -1010,8 +1010,21 @@ async function skExtract(td,ex){
   }
   if(!items.length) throw new Error(`${ex.label} : réponse illisible, réessaie.`);
   const n=skMerge(td,ex,items);
+  ex.skDone=true;
   await saveTd(td);
   return n;
+}
+const netErr=e=>/failed to fetch|load failed|networkerror|network request failed|fetch failed/i.test(e.message||'')||e.name==='TypeError';
+// connexion coupée (limite de débit, serveur surchargé, onglet suspendu…) : on réessaie avec une attente croissante
+async function skTry(td,ex,upd){
+  for(let t=0;;t++){
+    try{return await skExtract(td,ex)}
+    catch(e){
+      if(!netErr(e)) throw e;
+      if(t>=3) throw new Error(`Connexion coupée par le fournisseur d'IA (« ${e.message} ») après 4 essais sur ${ex.label}. Causes fréquentes : limite de requêtes ou serveur surchargé (certains fournisseurs coupent sans message), réseau instable, ou écran verrouillé / onglet en arrière-plan sur téléphone. Relance : les exercices déjà traités sont ignorés.`);
+      for(let w=[5,15,40][t];w>0;w--){upd(`Connexion coupée sur ${ex.label} : nouvel essai dans ${w} s (${t+1}/3)…`);await new Promise(r=>setTimeout(r,1000))}
+    }
+  }
 }
 
 /* ---------- actions ---------- */
@@ -1055,17 +1068,22 @@ const A={
     st.skId=null;await saveTd(td);render()},
   async 'sk-clear'(){
     if(!confirm('Vider tout le carnet de ce chapitre ?')) return;
-    const td=curTd();td.skills=[];st.skId=null;await saveTd(td);render()},
+    const td=curTd();td.skills=[];td.exos.forEach(e=>{delete e.skDone});st.skId=null;await saveTd(td);render()},
   'sk-print'(){printSkills(curTd())},
   async 'sk-extract'(d){
-    const td=curTd(),list=(d.scope==='exo'?[curExo()].filter(Boolean):td.exos).filter(e=>((e.clean||'')+(e.text||'')).trim());
-    if(!list.length){st.err="Aucun énoncé exploitable : importe ou écris l'énoncé de l'exercice.";return render()}
+    const td=curTd(),all=(d.scope==='exo'?[curExo()].filter(Boolean):td.exos).filter(e=>((e.clean||'')+(e.text||'')).trim());
+    if(!all.length){st.err="Aucun énoncé exploitable : importe ou écris l'énoncé de l'exercice.";return render()}
+    // chapitre entier : on saute les exercices déjà traités (reprise après une coupure)
+    const list=d.scope==='exo'?all:all.filter(e=>!e.skDone);
+    if(!list.length){st.err="Tous les exercices de ce chapitre ont déjà été traités. Pour en relancer un, utilise « De cet exo »."; return render()}
     if(st.view==='td') st.rt='skills';
+    const upd=m=>{st.busy=m;const bb=$('.banner.busy');if(bb) bb.textContent='⏳ '+m;else render()};
     await run('Skill Hunter…',async()=>{
       let added=0,fail=null;
       for(let i=0;i<list.length&&!fail;i++){
-        st.busy=`Skill Hunter : ${list[i].label} (${i+1}/${list.length})…`;const bb=$('.banner.busy');if(bb) bb.textContent='⏳ '+st.busy;else render();
-        try{added+=await skExtract(td,list[i])}catch(e){fail=e}
+        upd(`Skill Hunter : ${list[i].label} (${i+1}/${list.length})…`);
+        try{added+=await skTry(td,list[i],upd)}catch(e){fail=e}
+        if(!fail&&i<list.length-1) await new Promise(r=>setTimeout(r,1500));
       }
       if(fail) throw new Error(fail.message+(added?` — ${added} méthode(s) déjà ajoutée(s) au carnet.`:''));
     });
