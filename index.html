@@ -125,11 +125,20 @@ pre{white-space:pre-wrap;background:var(--card2);padding:10px;border-radius:8px;
 const $=(s,e=document)=>e.querySelector(s);
 const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+// KaTeX : chaque formule n'est composée qu'une seule fois (cache), directement dans fmt
+const KC=new Map();
+const tex=m=>{
+  if(!window.katex) return esc(m);          // KaTeX pas encore chargé : math() s'en charge ensuite
+  let r=KC.get(m);if(r!==undefined) return r;
+  const d=m.startsWith('$$')||m.startsWith('\\['),b=(m[0]==='$'&&!d)?m.slice(1,-1):m.slice(d?2:2,-2);
+  try{r=katex.renderToString(b,{displayMode:d,throwOnError:false,output:'html'})}catch{r=esc(m)}
+  KC.set(m,r);return r;
+};
 const fmt=t=>{
   // protège les formules (y compris multi-lignes) avant la mise en forme du texte
   const M=[];
   const s=String(t??'').replace(/\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/g,m=>{M.push(m);return '\u0000'+(M.length-1)+'\u0000'});
-  return esc(s).replace(/^#+\s*(.*)$/gm,'<b>$1</b>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/^- /gm,'• ').replace(/\n/g,'<br>').replace(/\u0000(\d+)\u0000/g,(_,i)=>esc(M[+i]));
+  return esc(s).replace(/^#+\s*(.*)$/gm,'<b>$1</b>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/^- /gm,'• ').replace(/\n/g,'<br>').replace(/\u0000(\d+)\u0000/g,(_,i)=>tex(M[+i]));
 };
 const ui=()=>{try{return {theme:'',size:15,...JSON.parse(localStorage.getItem('mattexo.ui')||'{}')}}catch{return {theme:'',size:15}}};
 const applyUI=()=>{const u=ui(),r=document.documentElement;if(u.theme) r.dataset.theme=u.theme;else delete r.dataset.theme;r.style.setProperty('--fs',u.size+'px')};
@@ -564,11 +573,11 @@ function printDoc(td,exos){
   window.onafterprint=()=>{r.innerHTML=''};
   setTimeout(()=>window.print(),500);
 }
-function math(){
-  if(window.renderMathInElement) renderMathInElement(document.body,{throwOnError:false,delimiters:[
+function math(root){
+  if(window.renderMathInElement) renderMathInElement(root||document.body,{throwOnError:false,ignoredClasses:['katex','katex-display'],delimiters:[
     {left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},
     {left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false}]});
-  else setTimeout(math,300);
+  else setTimeout(()=>math(root),300);
 }
 const banner=()=>(st.busy?`<div class="banner busy">⏳ ${esc(st.busy)}</div>`:'')+(st.err?`<div class="banner err">⚠ ${esc(st.err)}</div>`:'');
 
@@ -851,8 +860,13 @@ function skList(td){
   all.filter(x=>x.kind==='precise'&&!all.some(g=>g.id===x.parent&&g.kind==='general')&&hit(x)).forEach(c=>rows.push({s:c,orphan:1}));
   return rows;
 }
+function vSkRows(td){
+  const all=td.skills||[],rows=skList(td);
+  return `${rows.length?rows.map(r=>`<button class="sk-item ${r.sub?'sub':''} ${r.s.id===st.skId?'on':''}" data-act="sk-open" data-id="${r.s.id}">${r.s.done?'✓ ':''}${fmt(r.s.title)}${r.orphan?' <span class="mut">· cas précis</span>':''}</button>`).join('')
+      :`<p class="mut">${all.length?'Aucune méthode ne correspond.':"Carnet vide. « Extraire » lit les énoncés et les corrections de ce chapitre pour en tirer des méthodes générales et des cas précis. Tu peux aussi les écrire toi-même."}</p>`}`;
+}
 function vSkIndex(td,compact){
-  const all=td.skills||[],m=all.filter(x=>x.done).length,ex=curExo(),rows=skList(td);
+  const all=td.skills||[],m=all.filter(x=>x.done).length,ex=curExo();
   return `<h3 class="bk-title">Skill Hunter</h3><div class="mut">${esc(td.title)}</div>
     <div class="mut" style="margin-top:6px">${m}/${all.length} méthodes maîtrisées</div>${bar(m,all.length)}
     <input id="sk-q" placeholder="Chercher une méthode…" value="${esc(st.skQ)}" style="margin:8px 0">
@@ -861,8 +875,7 @@ function vSkIndex(td,compact){
     <div class="row" style="margin:8px 0"><button class="s p" data-act="sk-extract" data-scope="td" ${st.busy?'disabled':''}>✨ Extraire du chapitre</button>
       <button class="s" data-act="sk-extract" data-scope="exo" ${st.busy||!ex?'disabled':''}>✨ De cet exo</button>
       <button class="s" data-act="sk-new">+ À la main</button></div>
-    ${rows.length?rows.map(r=>`<button class="sk-item ${r.sub?'sub':''} ${r.s.id===st.skId?'on':''}" data-act="sk-open" data-id="${r.s.id}">${r.s.done?'✓ ':''}${fmt(r.s.title)}${r.orphan?' <span class="mut">· cas précis</span>':''}</button>`).join('')
-      :`<p class="mut">${all.length?'Aucune méthode ne correspond.':"Carnet vide. « Extraire » lit les énoncés et les corrections de ce chapitre pour en tirer des méthodes générales et des cas précis. Tu peux aussi les écrire toi-même."}</p>`}
+    <div id="sk-list">${vSkRows(td)}</div>
     ${all.length?`<details style="margin-top:12px"><summary class="mut">Plus</summary><p class="row"><button class="s" data-act="sk-print">📄 PDF du carnet</button><button class="s d" data-act="sk-clear">Vider ce carnet</button></p></details>`:''}`;
 }
 function vSkPage(td,s,compact){
@@ -895,10 +908,16 @@ function vSkEdit(td,s){
     <label>Exercices liés</label>${td.exos.map(e=>`<label class="row" style="margin:2px 0"><input type="checkbox" class="sk-src" value="${e.id}" style="width:auto" ${(c.exos||[]).includes(e.id)?'checked':''}> ${esc(e.label)}</label>`).join('')}
     <p class="row"><button class="p" data-act="sk-save">Enregistrer</button><button data-act="sk-cancel">Annuler</button></p>`;
 }
+function renderBook(){
+  const td=curTd(),el=$('#bk');
+  if(!td||!el) return render();
+  el.outerHTML=vBook(td,st.view==='td');
+  math($('#bk'));
+}
 function vBook(td,compact){
   const s=skById(td,st.skId),page=st.skEdit?vSkEdit(td,s):s?vSkPage(td,s,compact):'<p class="mut">Choisis une méthode dans le sommaire.</p>';
-  if(compact) return `<div class="book one">${(s||st.skEdit)?`<div class="bk-r">${page}</div>`:`<div class="bk-l">${vSkIndex(td,true)}</div>`}</div>`;
-  return `<div class="book"><div class="bk-l">${vSkIndex(td,false)}</div><div class="bk-r">${page}</div></div>`;
+  if(compact) return `<div id="bk" class="book one">${(s||st.skEdit)?`<div class="bk-r">${page}</div>`:`<div class="bk-l">${vSkIndex(td,true)}</div>`}</div>`;
+  return `<div id="bk" class="book"><div class="bk-l">${vSkIndex(td,false)}</div><div class="bk-r">${page}</div></div>`;
 }
 function vSkills(){
   if(!st.tds.length) return `${banner()}<p class="mut">Importe d'abord un TD : chaque chapitre a son propre Skill Hunter.</p>`;
@@ -1012,13 +1031,13 @@ const A={
   'sk-chap'(d){st.tdId=d.id;st.exoId=curTd().exos[0]?.id;st.skId=null;st.skEdit=null;st.skQ='';st.skF='all';render()},
   rt(d){st.rt=d.k;render()},
   'sk-peek'(d){st.rt='skills';st.skId=d.id;st.skEdit=null;render()},
-  'sk-open'(d){st.skId=d.id;st.skEdit=null;render()},
-  'sk-close'(){st.skId=null;st.skEdit=null;render()},
-  'sk-f'(d){st.skF=d.k;render()},
+  'sk-open'(d){st.skId=d.id;st.skEdit=null;renderBook()},
+  'sk-close'(){st.skId=null;st.skEdit=null;renderBook()},
+  'sk-f'(d){st.skF=d.k;renderBook()},
   'sk-goto'(d){st.exoId=d.id;st.tab='orig';st.view='td';render()},
-  'sk-new'(d){st.skEdit='new';st.skNew={kind:d.parent?'precise':'general',parent:d.parent||'',exos:st.exoId?[st.exoId]:[]};render()},
-  'sk-edit'(){st.skEdit=st.skId;render()},
-  'sk-cancel'(){st.skEdit=null;st.skNew=null;render()},
+  'sk-new'(d){st.skEdit='new';st.skNew={kind:d.parent?'precise':'general',parent:d.parent||'',exos:st.exoId?[st.exoId]:[]};renderBook()},
+  'sk-edit'(){st.skEdit=st.skId;renderBook()},
+  'sk-cancel'(){st.skEdit=null;st.skNew=null;renderBook()},
   async 'sk-save'(){
     const td=curTd(),title=(v('sk-title')||'').trim();
     if(!title){st.err='Donne un titre à la méthode.';return render()}
@@ -1029,7 +1048,7 @@ const A={
     if(st.skEdit==='new'){const x={id:uid(),created:Date.now(),done:false,...f};td.skills.push(x);st.skId=x.id}
     else Object.assign(skById(td,st.skEdit),f);
     st.skEdit=null;st.skNew=null;await saveTd(td);render()},
-  async 'sk-done'(d){const td=curTd(),x=skById(td,d.id);x.done=!x.done;await saveTd(td);render()},
+  async 'sk-done'(d){const td=curTd(),x=skById(td,d.id);x.done=!x.done;await saveTd(td);renderBook()},
   async 'sk-del'(d){
     if(!confirm('Supprimer cette méthode ?')) return;
     const td=curTd();td.skills=td.skills.filter(x=>x.id!==d.id);td.skills.forEach(x=>{if(x.parent===d.id) x.parent=null});
@@ -1045,7 +1064,7 @@ const A={
     await run('Skill Hunter…',async()=>{
       let added=0,fail=null;
       for(let i=0;i<list.length&&!fail;i++){
-        st.busy=`Skill Hunter : ${list[i].label} (${i+1}/${list.length})…`;render();
+        st.busy=`Skill Hunter : ${list[i].label} (${i+1}/${list.length})…`;const bb=$('.banner.busy');if(bb) bb.textContent='⏳ '+st.busy;else render();
         try{added+=await skExtract(td,list[i])}catch(e){fail=e}
       }
       if(fail) throw new Error(fail.message+(added?` — ${added} méthode(s) déjà ajoutée(s) au carnet.`:''));
@@ -1267,7 +1286,7 @@ document.addEventListener('change',async e=>{
   }
 });
 document.addEventListener('input',e=>{
-  if(e.target.id==='sk-q'){st.skQ=e.target.value;const p=e.target.selectionStart;render();const i=$('#sk-q');i.focus();i.setSelectionRange(p,p)}
+  if(e.target.id==='sk-q'){st.skQ=e.target.value;clearTimeout(st._skT);st._skT=setTimeout(()=>{const td=curTd(),l=$('#sk-list');if(td&&l){l.innerHTML=vSkRows(td);math(l)}},150);return}
   if(e.target.id==='c-q'){st.ferr.q=e.target.value;const p=e.target.selectionStart;render();const i=$('#c-q');i.focus();i.setSelectionRange(p,p)}
 });
 
