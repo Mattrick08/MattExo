@@ -1,7 +1,7 @@
 {
   "name": "MattExo",
   "short_name": "MattExo",
-  "description": "Variantes d'exercices de TD, corrections IA et carnet d'erreurs",
+  "description": "Variantes d'exercices de TD, corrections IA, carnet d'erreurs et Skill Hunter (méthodes par chapitre)",
   "lang": "fr",
   "start_url": "./index.html",
   "scope": "./",
