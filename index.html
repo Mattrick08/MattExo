@@ -256,7 +256,7 @@ function maxOut(s,ms){
 async function callAI(messages,ov){
   const s0=settings(),hasImg=messages.some(m=>m.img||m.imgs),useV=hasImg&&s0.vkey&&s0.vmodel;
   let s=useV?{...s0,provider:s0.vprov,base:s0.vbase||s0.base,model:s0.vmodel,key:s0.vkey,effort:'',temp:''}:s0;
-  if(ov) s={...s,...ov};
+  if(ov&&!useV) s={...s,...ov};
   for(let essai=0;;essai++){
     try{return await callAI0(messages,s)}
     catch(e){
@@ -512,8 +512,78 @@ async function readImg(td,ex,imgs){
   if(!t) throw new Error("Le modèle vision n'a rien renvoyé. Réessaie ou ajoute une capture plus nette avec « + Image ».");
   ex.text=t;ex.trusted=false;await saveTd(td);
 }
+// Tâches de transcription (pas de raisonnement) : effort bas ; si le modèle refuse ce réglage, on le retient et on réessaie sans
+async function callFast(messages){
+  const m=settings().model;st.noEff=st.noEff||{};
+  if(st.noEff[m]) return callAI(messages);
+  try{return await callAI(messages,{effort:'low'})}
+  catch(e){
+    if(/reasoning|effort|unrecogni[sz]ed|unsupported|not supported|invalid.{0,20}param/i.test(e.message||'')){st.noEff[m]=1;return callAI(messages)}
+    throw e;
+  }
+}
+// Conversion locale instantanée (sans IA) : notation linéaire -> LaTeX. Heuristique : c'est un brouillon à relire.
+const QL_GR={α:'alpha',β:'beta',γ:'gamma',δ:'delta',ε:'varepsilon',θ:'theta',λ:'lambda',μ:'mu',π:'pi',ρ:'rho',σ:'sigma',τ:'tau',φ:'varphi',ω:'omega',Δ:'Delta',Σ:'Sigma',Ω:'Omega',Φ:'Phi',Γ:'Gamma',Λ:'Lambda',Π:'Pi',Θ:'Theta'};
+const QL_SY={'≤':'\\leq','≥':'\\geq','≠':'\\neq','≈':'\\approx','∞':'\\infty','∈':'\\in','∉':'\\notin','⊂':'\\subset','⊆':'\\subseteq','∪':'\\cup','∩':'\\cap','→':'\\to','⇒':'\\Rightarrow','⇔':'\\Leftrightarrow','×':'\\times','÷':'\\div','±':'\\pm','∫':'\\int','∑':'\\sum','∏':'\\prod','·':'\\cdot','∂':'\\partial','∇':'\\nabla','ℝ':'\\mathbb{R}','ℕ':'\\mathbb{N}','ℤ':'\\mathbb{Z}','ℚ':'\\mathbb{Q}','ℂ':'\\mathbb{C}','∀':'\\forall','∃':'\\exists','°':'^\\circ','−':'-'};
+const QL_SUP={'⁰':0,'¹':1,'²':2,'³':3,'⁴':4,'⁵':5,'⁶':6,'⁷':7,'⁸':8,'⁹':9},QL_SUB={'₀':0,'₁':1,'₂':2,'₃':3,'₄':4,'₅':5,'₆':6,'₇':7,'₈':8,'₉':9};
+function quickLatex(src){
+  const keep=[];
+  const t=String(src||'').replace(/\$\$[\s\S]+?\$\$|\$[^$\n]+\$/g,m=>{keep.push(m);return '\u0001'+(keep.length-1)+'\u0001'});
+  const MATH=/[\^_=<>{}\\≤≥≠≈∈∉⊂⊆∪∩→⇒⇔∞∫∑∏∂∇√±×÷·ℝℕℤℚℂ∀∃αβγδεθλμπρστφωΔΣΩΦΓΛΠΘ⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉]/;
+  const FN=/^(?:[a-zA-Z]|sin|cos|tan|ln|log|exp|det|max|min|lim|sup|inf)\([^()\s]+\)$/;
+  const OPS=/^[=<>≤≥≠≈∈∉⊂⊆∪∩→⇒⇔±×÷·+\-−*\/]+$/,LBL=/^\(?[0-9a-z]{1,2}\)[.:]?$/i;
+  const core=k=>k.replace(/[.,;:!?]+$/,'');
+  const cls=k=>{
+    const c=core(k);
+    if(!c||LBL.test(c)) return 'P';
+    if(OPS.test(c)) return 'O';
+    if(FN.test(c)||MATH.test(c)) return 'M';
+    if(/[+*]/.test(c)&&/^[\w()+\-*\/.,^_]+$/.test(c)) return 'M';
+    if(/\//.test(c)&&/[\d()]/.test(c)&&/^[\w()+\-*\/.,^_]+$/.test(c)&&!/^https?:/.test(c)) return 'M';
+    if(/^\d+(?:[.,]\d+)?°?$/.test(c)||/^[a-zA-Z]$/.test(c)) return 'N';
+    return 'P';
+  };
+  const conv=x=>{
+    x=x.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g,m=>'^{'+[...m].map(c=>QL_SUP[c]).join('')+'}')
+       .replace(/[₀-₉]+/g,m=>'_{'+[...m].map(c=>QL_SUB[c]).join('')+'}')
+       .replace(/√\(([^()]*)\)/g,'\\sqrt{$1}').replace(/√([A-Za-z0-9]+)/g,'\\sqrt{$1}')
+       .replace(/<=>/g,'⇔').replace(/=>/g,'⇒').replace(/->/g,'→').replace(/<=/g,'≤').replace(/>=/g,'≥').replace(/!=/g,'≠')
+       .replace(/ \* /g,' · ');
+    x=[...x].map(c=>QL_SY[c]?QL_SY[c]+' ':QL_GR[c]?'\\'+QL_GR[c]+' ':c).join('');
+    return x.replace(/\^(-?\d{2,})/g,'^{$1}').replace(/_(\d{2,})/g,'_{$1}').replace(/[ \t]{2,}/g,' ').replace(/\s+([}\]),.])/g,'$1').trim();
+  };
+  const lines=t.split('\n').map(line=>{
+    if(/^\s*Sch[ée]ma\s*:/i.test(line)) return line;
+    const parts=line.split(/(\s+)/),idx=[];
+    for(let k=0;k<parts.length;k+=2) idx.push(k);
+    const C=idx.map(k=>cls(parts[k])),L=idx.length,runs=new Map();
+    for(let a=0;a<L;a++){
+      let s0=-1;
+      if(C[a]==='M') s0=a;
+      else if(C[a]==='O'&&a>0&&C[a-1]==='N'&&a+1<L&&(C[a+1]==='M'||C[a+1]==='N')) s0=a-1;
+      if(s0<0) continue;
+      let e=a;
+      for(let b=a+1;b<L;b++){
+        const hasInt=idx.slice(s0,b).some(k=>/∫|\\int/.test(parts[k]));
+        if(C[b]==='M'||(C[b]==='O'&&b+1<L&&(C[b+1]==='M'||C[b+1]==='N'))||(C[b]==='N'&&C[b-1]==='O')||(hasInt&&/^d[a-z]$/.test(core(parts[idx[b]])))) e=b; else break;
+      }
+      runs.set(s0,e);a=e;
+    }
+    let o='';
+    for(let a=0;a<L;a++){
+      if(a>0) o+=parts[idx[a]-1];
+      if(runs.has(a)){
+        const e=runs.get(a),last=parts[idx[e]],sm=/[.,;:!?]+$/.exec(last),suf=sm?sm[0]:'';
+        let body=parts.slice(idx[a],idx[e]+1).join('');if(suf) body=body.slice(0,-suf.length);
+        o+='$'+conv(body)+'$'+suf;a=e;
+      } else o+=parts[idx[a]];
+    }
+    return o;
+  });
+  return lines.join('\n').replace(/\u0001(\d+)\u0001/g,(_,i)=>keep[+i]);
+}
 async function toLatex(td,ex){
-  const raw=await callAI([{role:'system',content:sys()},{role:'user',content:"Voici le texte d'un énoncé recopié (notation linéaire : ^ exposant, _ indice, / fraction). Convertis-le en LaTeX propre ($...$ en ligne, $$...$$ pour les formules importantes, \\ce{...} pour la chimie). Garde exactement les mêmes mots, la même numérotation et le même sens ; conserve le bloc « Schéma : » tel quel en texte. Ne résous rien, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
+  const raw=await callFast([{role:'system',content:'Tu convertis des énoncés scientifiques en LaTeX, fidèlement, sans rien résoudre ni ajouter.'},{role:'user',content:"Voici le texte d'un énoncé recopié (notation linéaire : ^ exposant, _ indice, / fraction). Convertis-le en LaTeX propre ($...$ en ligne, $$...$$ pour les formules importantes, \\ce{...} pour la chimie). Garde exactement les mêmes mots, la même numérotation et le même sens ; conserve le bloc « Schéma : » tel quel en texte. Ne résous rien, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
   const t=san(raw||'').trim().replace(/^```[a-z]*\n?/i,'').replace(/\n?```$/,'').trim();
   if(!t) throw new Error('Conversion LaTeX vide, réessaie.');
   ex.clean=t;ex.trusted=false;await saveTd(td);
@@ -644,7 +714,7 @@ function vOrig(ex){
     <textarea id="x-text" style="min-height:110px">${esc(ex.text)}</textarea>
     <p class="row"><button data-act="save-exo">Enregistrer</button><button data-act="validate">✓ Valider l'énoncé</button>
       <button data-act="show-imgs" class="${st.showImgs?'on':''}">${st.showImgs?'Masquer':'Voir'} le PDF / les images</button></p>
-    <p class="row"><button data-act="read-img" ${b}>1. Lire le texte de l'image</button><button data-act="clean" ${b}>2. Mettre en LaTeX</button><button data-act="clean-img" ${b}>1+2 d'un coup</button>
+    <p class="row"><button data-act="read-img" ${b}>1. Lire le texte de l'image</button><button data-act="clean" ${b}>2. Mettre en LaTeX</button><button data-act="clean-fast" ${b} title="Conversion locale instantanée, sans IA : brouillon à relire">⚡ LaTeX rapide (sans IA)</button><button data-act="clean-img" ${b}>1+2 d'un coup</button>
       <label class="btn" style="margin:0">+ Image<input id="x-img" type="file" accept="image/*" hidden></label>${ex.imgs?.length?`<button data-act="del-imgs">Retirer mes ${ex.imgs.length} image(s)</button>`:''}
       <button class="d" data-act="del-exo">Supprimer l'exo</button></p>
     ${vPlan(ex,'orig')}${vMine(ex,'orig')}`;
@@ -1222,6 +1292,10 @@ const A={
       if(!st.limits||st.limits.t<t0) throw new Error("Ce fournisseur n'expose pas les en-têtes de limite au navigateur : la limite exacte est visible sur son site (page « Limits » / « Rate limits »).");
     });
   },
+  async 'clean-fast'(){
+    const td=curTd(),ex=curExo(),raw=(v('x-text')||ex.text||'').trim();
+    if(!raw){st.err="Le texte brut est vide : colle l'énoncé dans « Texte brut » ou utilise « Lire avec l'image ».";return render()}
+    ex.text=raw;ex.clean=quickLatex(raw);ex.trusted=false;await saveTd(td);st.err='';render()},
   async clean(){
     const td=curTd(),ex=curExo();
     if(!(ex.text||'').trim()){st.err="Le texte brut est vide : utilise « Lire avec l'image ».";return render()}
