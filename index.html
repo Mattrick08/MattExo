@@ -220,12 +220,15 @@ function limFoot(){
   if(rq==null&&tk==null) return '';
   return `<p class="mut">Quota restant (mesuré à ${new Date(L.t).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}) : ${rq!=null?rq+' requêtes':''}${rq!=null&&tk!=null?' · ':''}${tk!=null?tk+' tokens':''}</p>`;
 }
+const tmoErr=()=>{const e=new Error(`Pas de réponse après ${Math.round((st.tmo||100000)/1000)} s : le modèle est trop lent ou surchargé. Essaie un modèle plus léger (ex. gemini-3.5-flash-lite) ou un effort « low ».`);e.code='timeout';return e};
+// lecture du corps de la réponse : le délai court encore pendant cette lecture
+const rjson=async r=>{try{return await r.json()}catch(e){if(e.name==='TimeoutError'||e.name==='AbortError') throw tmoErr();throw e}};
 // fetch avec nouvel essai automatique si la limite (429) est atteinte
 async function post(url,init){
   for(let i=0;;i++){
     let r;
-    try{r=await fetch(url,{...init,signal:AbortSignal.timeout(100000)})}
-    catch(e){if(e.name==='TimeoutError'||e.name==='AbortError') throw new Error("Pas de réponse après 100 s : le modèle est trop lent ou surchargé. Essaie un modèle plus léger (ex. gemini-3.5-flash-lite) ou un effort « low ».");throw e}
+    try{r=await fetch(url,{...init,signal:AbortSignal.timeout(st.tmo||100000)})}
+    catch(e){if(e.name==='TimeoutError'||e.name==='AbortError') throw tmoErr();throw e}
     if(r.status!==429||i>=4) return r;
     const w=Math.min(parseFloat(r.headers.get('retry-after'))||20,70),prev=st.busy;
     st.busy=`Limite atteinte, nouvel essai dans ${Math.ceil(w)} s…`;render();
@@ -250,9 +253,10 @@ function maxOut(s,ms){
   return m;
 }
 // utilise le « modèle vision » (s'il est configuré) dès qu'un message contient une image
-async function callAI(messages){
+async function callAI(messages,ov){
   const s0=settings(),hasImg=messages.some(m=>m.img||m.imgs),useV=hasImg&&s0.vkey&&s0.vmodel;
   let s=useV?{...s0,provider:s0.vprov,base:s0.vbase||s0.base,model:s0.vmodel,key:s0.vkey,effort:'',temp:''}:s0;
+  if(ov) s={...s,...ov};
   for(let essai=0;;essai++){
     try{return await callAI0(messages,s)}
     catch(e){
@@ -281,7 +285,7 @@ async function callAI0(messages,s){
       body:JSON.stringify({model:s.model,max_tokens:mo||8000,...extra,
         system:messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),
         messages:messages.filter(m=>m.role!=='system').map(m=>({role:m.role,content:toParts(m,'anthropic')}))})});
-    captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
+    captureLimits(r);const d=await rjson(r); if(!r.ok) throw apiErr(r,d);
     return d.content.map(c=>c.text||'').join('');
   }
   if(s.effort) extra.reasoning_effort=s.effort;
@@ -289,7 +293,7 @@ async function callAI0(messages,s){
   const r=await post(s.base.replace(/\/$/,'')+'/chat/completions',{method:'POST',
     headers:{'content-type':'application/json','authorization':'Bearer '+s.key},
     body:JSON.stringify({model:s.model,...extra,messages:messages.map(m=>({role:m.role,content:toParts(m,'openai')}))})});
-  captureLimits(r);const d=await r.json(); if(!r.ok) throw apiErr(r,d);
+  captureLimits(r);const d=await rjson(r); if(!r.ok) throw apiErr(r,d);
   const ch=d.choices?.[0];
   if(ch?.finish_reason==='length'){
     const e=new Error("Réponse coupée (trop longue pour le modèle ou la limite).");e.code='cut';throw e;
@@ -936,9 +940,9 @@ function printSkills(td){
   r.innerHTML=`<h1>Skill Hunter — ${esc(td.title)}</h1><p>MattExo · ${new Date().toLocaleDateString('fr-FR')}</p>`+body;
   math();window.onafterprint=()=>{r.innerHTML=''};setTimeout(()=>window.print(),500);
 }
-const skillPrompt=(td,ex,exist)=>{
+const skillPrompt=(td,ex,exist,lite)=>{
   const cap=(x,n)=>{x=String(x||'');return x.length>n?x.slice(0,n)+' […]':x};
-  const vs=LK.filter(k=>ex.variants[k]).map(k=>`### Variante « ${LV[k]} »\nÉnoncé : ${cap(ex.variants[k].enonce,1500)}\nCorrection : ${cap(ex.variants[k].correction,3500)}`).join('\n\n');
+  const vs=lite?'':LK.filter(k=>ex.variants[k]).map(k=>`### Variante « ${LV[k]} »\nÉnoncé : ${cap(ex.variants[k].enonce,800)}\nCorrection : ${cap(ex.variants[k].correction,2200)}`).join('\n\n');
   return `Tu construis le « Skill Hunter » d'un élève de prépa : un carnet de méthodes pour le chapitre « ${td.title} ». L'élève l'ouvrira devant un exercice qu'il ne sait pas démarrer.
 
 Voici un exercice du TD${vs?' et les corrections détaillées de ses variantes (mêmes méthodes)':''}.${vs?'':" Il n'y a pas encore de correction : résous d'abord l'exercice toi-même, rigoureusement, puis extrais les méthodes."}
@@ -955,7 +959,7 @@ QUAND : comment la reconnaître dans un énoncé (mots-clés, forme de l'objet, 
 ETAPES : étapes ordonnées, une par ligne commençant par « - », chaque étape sur UNE seule ligne.
 RESTRICTIONS : conditions d'application à vérifier, pièges, cas où la méthode échoue et quoi faire alors.
 EXEMPLE : mini-exemple court et résolu inspiré de l'exercice (énoncé en une phrase, puis application des étapes).
-Pas de méthode triviale, pas de simple fait de cours.
+Pas de méthode triviale, pas de simple fait de cours. Donne au maximum ${lite?3:5} méthodes, formulées de façon concise (étapes courtes, exemple en 2 ou 3 lignes).
 
 Méthodes déjà au carnet (ne les duplique pas ; si l'exercice apporte une restriction ou un cas nouveau, crée un TYPE precise rattaché à son titre exact) :
 ${exist||'(aucune)'}
@@ -1000,12 +1004,12 @@ function skMerge(td,ex,items){
   }
   return n;
 }
-async function skExtract(td,ex){
+async function skExtract(td,ex,lite){
   td.skills??=[];
   const exist=td.skills.map(x=>`- [${x.kind}] ${x.title}`).join('\n');
   let items=[];
   for(let t=0;t<2&&!items.length;t++){
-    const raw=await callAI([{role:'system',content:sys()},{role:'user',content:skillPrompt(td,ex,exist)+(t?"\n\nIMPORTANT : respecte STRICTEMENT le format (blocs ===METHODE=== avec TYPE:, PARENT:, TITRE:, QUAND:, ETAPES:, RESTRICTIONS:, EXEMPLE:).":'')}]);
+    const raw=await callAI([{role:'system',content:sys()},{role:'user',content:skillPrompt(td,ex,exist,lite)+(t?"\n\nIMPORTANT : respecte STRICTEMENT le format (blocs ===METHODE=== avec TYPE:, PARENT:, TITRE:, QUAND:, ETAPES:, RESTRICTIONS:, EXEMPLE:).":'')}],settings().effort&&settings().effort!=='low'?{effort:'low'}:null);
     items=parseSkills(raw);
   }
   if(!items.length) throw new Error(`${ex.label} : réponse illisible, réessaie.`);
@@ -1017,12 +1021,15 @@ async function skExtract(td,ex){
 const netErr=e=>/failed to fetch|load failed|networkerror|network request failed|fetch failed/i.test(e.message||'')||e.name==='TypeError';
 // connexion coupée (limite de débit, serveur surchargé, onglet suspendu…) : on réessaie avec une attente croissante
 async function skTry(td,ex,upd){
-  for(let t=0;;t++){
-    try{return await skExtract(td,ex)}
+  let lite=false,nt=0;
+  for(;;){
+    try{return await skExtract(td,ex,lite)}
     catch(e){
+      if(e.code==='timeout'&&!lite){lite=true;upd(`${ex.label} : réponse trop longue, nouvel essai en version allégée…`);continue}
       if(!netErr(e)) throw e;
-      if(t>=3) throw new Error(`Connexion coupée par le fournisseur d'IA (« ${e.message} ») après 4 essais sur ${ex.label}. Causes fréquentes : limite de requêtes ou serveur surchargé (certains fournisseurs coupent sans message), réseau instable, ou écran verrouillé / onglet en arrière-plan sur téléphone. Relance : les exercices déjà traités sont ignorés.`);
-      for(let w=[5,15,40][t];w>0;w--){upd(`Connexion coupée sur ${ex.label} : nouvel essai dans ${w} s (${t+1}/3)…`);await new Promise(r=>setTimeout(r,1000))}
+      if(nt>=3) throw new Error(`Connexion coupée par le fournisseur d'IA (« ${e.message} ») après 4 essais sur ${ex.label}. Causes fréquentes : limite de requêtes ou serveur surchargé (certains fournisseurs coupent sans message), réseau instable, ou écran verrouillé / onglet en arrière-plan sur téléphone. Relance : les exercices déjà traités sont ignorés.`);
+      for(let w=[5,15,40][nt];w>0;w--){upd(`Connexion coupée sur ${ex.label} : nouvel essai dans ${w} s (${nt+1}/3)…`);await new Promise(r=>setTimeout(r,1000))}
+      nt++;
     }
   }
 }
@@ -1079,12 +1086,12 @@ const A={
     if(st.view==='td') st.rt='skills';
     const upd=m=>{st.busy=m;const bb=$('.banner.busy');if(bb) bb.textContent='⏳ '+m;else render()};
     await run('Skill Hunter…',async()=>{
-      let added=0,fail=null;
-      for(let i=0;i<list.length&&!fail;i++){
+      let added=0,fail=null;st.tmo=240000;
+      try{for(let i=0;i<list.length&&!fail;i++){
         upd(`Skill Hunter : ${list[i].label} (${i+1}/${list.length})…`);
         try{added+=await skTry(td,list[i],upd)}catch(e){fail=e}
         if(!fail&&i<list.length-1) await new Promise(r=>setTimeout(r,1500));
-      }
+      }}finally{st.tmo=0}
       if(fail) throw new Error(fail.message+(added?` — ${added} méthode(s) déjà ajoutée(s) au carnet.`:''));
     });
   },
