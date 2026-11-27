@@ -49,6 +49,7 @@ main{padding:18px;max-width:1500px;margin:auto}
 .banner{padding:10px 14px;border-radius:8px;margin-bottom:12px}
 .banner.busy{background:var(--bb);border:1px solid var(--ac)}
 .banner.err{background:var(--be);border:1px solid var(--ko)}
+.banner.ok{background:var(--card2);border:1px solid var(--ok)}
 .txt{background:var(--card2);border-radius:8px;padding:12px;margin:8px 0;overflow-x:auto}
 .tag{font-size:11px;border:1px solid var(--line);border-radius:20px;padding:1px 8px;color:var(--mut)}
 .err-item{border-left:3px solid var(--ko);padding:6px 10px;margin:8px 0;background:var(--card2);border-radius:0 8px 8px 0}
@@ -245,6 +246,7 @@ const tpmOf=s=>{
 // plafonne la réponse pour que (prompt + réponse) tienne dans la limite par minute
 function maxOut(s,ms){
   const tpm=tpmOf(s);let m=parseInt(s.maxout)||0;
+  if(!m&&/openrouter\.ai/.test(s.base||'')) m=32000;   // sans plafond, OpenRouter réserve le maximum du modèle et peut refuser faute de crédit
   if(tpm){
     const cap=Math.floor(tpm-estTok(ms)*1.15-200);
     if(cap<600) throw new Error(`Requête trop volumineuse pour ta limite (${tpm} tokens par minute) : l'énoncé est trop long. Raccourcis-le ou découpe l'exo en plusieurs.`);
@@ -257,10 +259,20 @@ async function callAI(messages,ov){
   const s0=settings(),hasImg=messages.some(m=>m.img||m.imgs),useV=hasImg&&s0.vkey&&s0.vmodel;
   let s=useV?{...s0,provider:s0.vprov,base:s0.vbase||s0.base,model:s0.vmodel,key:s0.vkey,effort:'',temp:''}:s0;
   if(ov&&!useV) s={...s,...ov};
+  const capCredit=af=>Math.floor(af-estTok(messages)*1.15-300);
+  const known=st.afford&&st.afford[s.model];
+  if(known&&capCredit(known)>=800) s={...s,maxout:Math.min(parseInt(s.maxout)||1e9,capCredit(known))};
   for(let essai=0;;essai++){
     try{return await callAI0(messages,s)}
     catch(e){
-      const m=e.message||'',x=/Limit (\d+),\s*(?:Used \d+,\s*)?Requested (\d+)/i.exec(m);
+      const m=e.message||'',af=/can only afford (\d+)/i.exec(m);
+      if(af&&essai<2&&s.provider!=='anthropic'){
+        // « requires more credits, or fewer max_tokens » : on baisse le plafond de sortie à ce que le crédit permet
+        const c=capCredit(+af[1]);
+        if(c>=800){st.afford={...(st.afford||{}),[s.model]:+af[1]};s={...s,maxout:Math.min(parseInt(s.maxout)||1e9,c)};continue}
+        e.message=`Crédit insuffisant pour cette requête (${af[1]} tokens abordables, prompt compris) : recharge ton crédit ou choisis un modèle moins cher. — ${m}`;throw e;
+      }
+x=/Limit (\d+),\s*(?:Used \d+,\s*)?Requested (\d+)/i.exec(m);
       if(x){st.tpm={...(st.tpm||{}),[s.model]:+x[1]};try{localStorage.setItem('mattexo.tpm',JSON.stringify(st.tpm))}catch{}}
       const trop=e.code==='cut'||/too large|tokens per minute|\bTPM\b|reduce (your|the) (message|prompt)|context length|maximum context|request_too_large/i.test(m);
       if(trop&&essai<1&&s.provider!=='anthropic'){
@@ -514,11 +526,11 @@ async function readImg(td,ex,imgs){
 }
 // Tâches de transcription (pas de raisonnement) : effort bas ; si le modèle refuse ce réglage, on le retient et on réessaie sans
 async function callFast(messages){
-  const m=settings().model;st.noEff=st.noEff||{};
-  if(st.noEff[m]) return callAI(messages);
-  try{return await callAI(messages,{effort:'low'})}
+  const m=settings().model,mo=Math.max(4000,Math.min(16000,Math.ceil(estTok(messages)*1.6)+1500));st.noEff=st.noEff||{};
+  if(st.noEff[m]) return callAI(messages,{maxout:mo});
+  try{return await callAI(messages,{effort:'low',maxout:mo})}
   catch(e){
-    if(/reasoning|effort|unrecogni[sz]ed|unsupported|not supported|invalid.{0,20}param/i.test(e.message||'')){st.noEff[m]=1;return callAI(messages)}
+    if(/reasoning|effort|unrecogni[sz]ed|unsupported|not supported|invalid.{0,20}param/i.test(e.message||'')){st.noEff[m]=1;return callAI(messages,{maxout:mo})}
     throw e;
   }
 }
@@ -582,11 +594,82 @@ function quickLatex(src){
   });
   return lines.join('\n').replace(/\u0001(\d+)\u0001/g,(_,i)=>keep[+i]);
 }
-async function toLatex(td,ex){
-  const raw=await callFast([{role:'system',content:'Tu convertis des énoncés scientifiques en LaTeX, fidèlement, sans rien résoudre ni ajouter.'},{role:'user',content:"Voici le texte d'un énoncé recopié (notation linéaire : ^ exposant, _ indice, / fraction). Convertis-le en LaTeX propre ($...$ en ligne, $$...$$ pour les formules importantes, \\ce{...} pour la chimie). Garde exactement les mêmes mots, la même numérotation et le même sens ; conserve le bloc « Schéma : » tel quel en texte. Ne résous rien, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n"+ex.text}]);
+const LATEX_SYS='Tu convertis des énoncés scientifiques en LaTeX, fidèlement, sans rien résoudre ni ajouter.';
+const latexPrompt=(txt,fix)=>fix
+  ?`Voici le texte brut d'un énoncé et ta conversion LaTeX précédente, qui a des problèmes :\n- ${fix.iss.join('\n- ')}\n\nRefais la conversion en corrigeant ces problèmes : formules LaTeX valides ($...$ en ligne, $$...$$ pour les formules importantes, \\ce{...} pour la chimie), AUCUN nombre ni mot perdu, ajouté ou modifié, même numérotation, bloc « Schéma : » conservé tel quel en texte. Ne résous rien. Renvoie uniquement l'énoncé.\n\nTEXTE BRUT :\n${txt}\n\nCONVERSION PRÉCÉDENTE :\n${fix.prev}`
+  :`Voici le texte d'un énoncé recopié (notation linéaire : ^ exposant, _ indice, / fraction). Convertis-le en LaTeX propre ($...$ en ligne, $$...$$ pour les formules importantes, \\ce{...} pour la chimie). Garde exactement les mêmes mots, la même numérotation et le même sens ; conserve le bloc « Schéma : » tel quel en texte. Ne résous rien, n'ajoute rien. Renvoie uniquement l'énoncé.\n\n${txt}`;
+async function latexOf(txt,fix){
+  const raw=await callFast([{role:'system',content:LATEX_SYS},{role:'user',content:latexPrompt(txt,fix)}]);
   const t=san(raw||'').trim().replace(/^```[a-z]*\n?/i,'').replace(/\n?```$/,'').trim();
   if(!t) throw new Error('Conversion LaTeX vide, réessaie.');
-  ex.clean=t;ex.trusted=false;await saveTd(td);
+  return t;
+}
+// Contrôles locaux (sans IA) d'une conversion : formules valides, $ appariés, nombres et mots conservés
+function latexCheck(raw,clean){
+  const R=String(raw||''),C=String(clean||''),iss=[];
+  if(!C.trim()) return ['Énoncé LaTeX vide'];
+  const SEG=/\$\$[\s\S]+?\$\$|\$[^$\n]+\$/g,segs=C.match(SEG)||[];
+  if(/\$/.test(C.replace(SEG,''))) iss.push("Symbole $ non apparié (une formule n'est pas fermée)");
+  if(window.katex){
+    let bad=0;
+    for(const m of segs){
+      const d=m.startsWith('$$'),bd=d?m.slice(2,-2):m.slice(1,-1);
+      try{katex.renderToString(bd,{displayMode:d,throwOnError:true,output:'html'})}
+      catch(e){if(++bad<=3) iss.push(`Formule invalide : ${m.slice(0,50)}${m.length>50?'…':''} (${String(e.message).replace(/^KaTeX parse error:\s*/,'').slice(0,70)})`)}
+    }
+    if(bad>3) iss.push(`… et ${bad-3} autre(s) formule(s) invalide(s)`);
+  }
+  const SUP='⁰¹²³⁴⁵⁶⁷⁸⁹',SUB='₀₁₂₃₄₅₆₇₈₉';
+  const nums=x=>(x.replace(/\{,\}/g,',').replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g,r=>' '+[...r].map(c=>SUP.indexOf(c)).join('')+' ').replace(/[₀₁₂₃₄₅₆₇₈₉]+/g,r=>' '+[...r].map(c=>SUB.indexOf(c)).join('')+' ').replace(/,/g,'.').match(/\d+(?:\.\d+)?/g)||[]).map(n=>String(+n));
+  const cnt=a=>a.reduce((m,k)=>(m[k]=(m[k]||0)+1,m),{});
+  const nr=cnt(nums(R)),nc=cnt(nums(C));
+  const miss=Object.keys(nr).filter(k=>(nc[k]||0)<nr[k]),extra=Object.keys(nc).filter(k=>(nr[k]||0)<nc[k]);
+  if(miss.length) iss.push('Nombre(s) du texte brut absent(s) du LaTeX : '+miss.slice(0,6).join(', '));
+  if(extra.length) iss.push('Nombre(s) ajouté(s) dans le LaTeX : '+extra.slice(0,6).join(', '));
+  const words=x=>nrm(x.replace(/\\([a-zA-Z]+)/g,' $1 ')).split(' ').filter(w=>w.length>=4);
+  const rw=words(R),cw=new Set(words(C));
+  if(rw.length>=8){
+    const ms=rw.filter(w=>!cw.has(w)),r=1-ms.length/rw.length;
+    if(r<0.9) iss.push(`Texte modifié ou tronqué : ${Math.round(r*100)} % des mots retrouvés (ex. ${[...new Set(ms)].slice(0,4).join(', ')})`);
+  }
+  if(R.length>80&&C.length<R.length*0.5) iss.push('Énoncé LaTeX nettement plus court que le texte brut (tronqué ?)');
+  return iss;
+}
+const lmark=ex=>{const iss=latexCheck(ex.text,ex.clean);return {ok:!iss.length,issues:iss,at:Date.now()}};
+async function toLatex(td,ex,fix){
+  ex.clean=await latexOf(ex.text,fix);ex.trusted=false;ex.lcheck=lmark(ex);await saveTd(td);
+}
+// énoncé long qui dépasse le délai : conversion morceau par morceau
+async function latexChunks(txt){
+  const out=[];let cur='';
+  const flush=async()=>{if(cur.trim()){out.push(await latexOf(cur));cur=''}};
+  for(const l of String(txt).split('\n')){if((cur+l).length>1500) await flush();cur+=l+'\n'}
+  await flush();return out.join('\n');
+}
+// un exercice : conversion (avec nouvel essai réseau / repli par morceaux), contrôle local, une correction ciblée si besoin
+async function latexTry(td,ex,upd){
+  let chunked=false,nt=0;
+  for(;;){
+    try{if(chunked){ex.clean=await latexChunks(ex.text);ex.trusted=false}else{ex.clean=await latexOf(ex.text);ex.trusted=false}break}
+    catch(e){
+      if(e.code==='timeout'&&!chunked){chunked=true;upd(`${ex.label} : énoncé long, conversion par morceaux…`);continue}
+      if(!netErr(e)) throw e;
+      if(nt>=3) throw new Error(`Connexion coupée par le fournisseur d'IA (« ${e.message} ») après 4 essais sur ${ex.label}. Relance : les énoncés déjà convertis sont ignorés.`);
+      for(let w=[5,15,40][nt];w>0;w--){upd(`Connexion coupée sur ${ex.label} : nouvel essai dans ${w} s (${nt+1}/3)…`);await new Promise(r=>setTimeout(r,1000))}
+      nt++;
+    }
+  }
+  let iss=latexCheck(ex.text,ex.clean),fixed=false;
+  if(iss.length){
+    upd(`${ex.label} : correction automatique (${iss.length} problème(s))…`);
+    try{
+      const t=await latexOf(ex.text,{prev:ex.clean,iss}),iss2=latexCheck(ex.text,t);
+      if(iss2.length<=iss.length){fixed=iss2.length<iss.length;ex.clean=t;iss=iss2}
+    }catch(e){if(!netErr(e)&&e.code!=='timeout') throw e}
+  }
+  ex.lcheck={ok:!iss.length,issues:iss,at:Date.now()};
+  await saveTd(td);
+  return {warn:iss.length>0,fixed};
 }
 async function extractPdf(file){
   pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -653,7 +736,7 @@ function math(root){
     {left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false}]});
   else setTimeout(()=>math(root),300);
 }
-const banner=()=>(st.busy?`<div class="banner busy">⏳ ${esc(st.busy)}</div>`:'')+(st.err?`<div class="banner err">⚠ ${esc(st.err)}</div>`:'');
+const banner=()=>(st.busy?`<div class="banner busy">⏳ ${esc(st.busy)}</div>`:'')+(st.err?`<div class="banner err">⚠ ${esc(st.err)}</div>`:'')+(st.info?`<div class="banner ok">✓ ${esc(st.info)}</div>`:'');
 
 function vHome(){
   return `${banner()}
@@ -676,8 +759,8 @@ function vHome(){
 function vTd(){
   const td=curTd(),ex=curExo(); if(!td) return vHome();
   const tp=tdProg(td);
-  const left=`<div><div class="card" style="padding:10px"><b>${pct(tp.done,tp.tot)} %</b> <span class="mut">${tp.done}/${tp.tot} faites · ${tp.gen}/${tp.tot} générées</span>${bar(tp.done,tp.tot)}</div>${td.exos.map(e=>`<button class="exo-item ${e.id===st.exoId?'on':''}" data-act="sel-exo" data-id="${e.id}">${esc(e.label)} <span class="mut">${exoProg(e).done}/3</span>${st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length?' <span class="tag">'+st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length+' ✗</span>':''}</button>`).join('')}
-    <button class="s" data-act="add-exo">+ Ajouter un exo</button> <button class="s" data-act="export-td">📄 PDF du TD</button></div>`;
+  const left=`<div><div class="card" style="padding:10px"><b>${pct(tp.done,tp.tot)} %</b> <span class="mut">${tp.done}/${tp.tot} faites · ${tp.gen}/${tp.tot} générées</span>${bar(tp.done,tp.tot)}</div>${td.exos.map(e=>`<button class="exo-item ${e.id===st.exoId?'on':''}" data-act="sel-exo" data-id="${e.id}">${esc(e.label)} <span class="mut">${exoProg(e).done}/3</span>${st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length?' <span class="tag">'+st.errs.filter(x=>x.exoId===e.id&&!x.resolved).length+' ✗</span>':''}${e.lcheck&&!e.lcheck.ok?' <span class="tag" title="Conversion LaTeX à vérifier">⚠</span>':''}</button>`).join('')}
+    <button class="s" data-act="add-exo">+ Ajouter un exo</button> <button class="s" data-act="export-td">📄 PDF du TD</button> <button class="s" data-act="latex-all" ${st.busy?'disabled':''} title="Met en LaTeX tous les exercices qui n'ont pas encore d'énoncé propre, puis contrôle le résultat">⚡ Tout en LaTeX</button></div>`;
   let main='<p class="mut">Sélectionne un exercice.</p>';
   if(ex){
     const tabs=[['orig','Original'],...Object.entries(LV)];
@@ -708,6 +791,7 @@ function vOrig(ex){
     ${ex.reasoning?`<div class="card"><b>Raisonnement commun</b><div>${fmt(ex.reasoning)}</div></div>`:''}
     ${ex.notes&&!/^RAS/i.test(ex.notes)?`<div class="mut">Vérification IA : ${fmt(ex.notes)}</div>`:''}
     <label>Libellé</label><input id="x-label" value="${esc(ex.label)}">
+    ${ex.lcheck&&!ex.lcheck.ok?`<div class="banner err"><b>Contrôle LaTeX : à vérifier</b><br>${ex.lcheck.issues.map(i=>'• '+esc(i)).join('<br>')}</div>`:ex.lcheck?'<div class="mut">✓ Contrôle LaTeX : formules valides, nombres et mots conservés</div>':''}
     <label>Énoncé propre (LaTeX), modifiable${ex.trusted?' · ✓ validé':' · à vérifier'}</label>
     <textarea id="x-clean" style="min-height:110px" placeholder="Clique sur « Lire avec l'image » ou « Mettre en LaTeX », ou écris-le toi-même">${esc(ex.clean||'')}</textarea>
     <label>Texte brut (lu sur l'image ou extrait du PDF) — modifiable</label>
@@ -1079,7 +1163,7 @@ async function skExtract(td,ex,lite){
   const exist=td.skills.map(x=>`- [${x.kind}] ${x.title}`).join('\n');
   let items=[];
   for(let t=0;t<2&&!items.length;t++){
-    const raw=await callAI([{role:'system',content:sys()},{role:'user',content:skillPrompt(td,ex,exist,lite)+(t?"\n\nIMPORTANT : respecte STRICTEMENT le format (blocs ===METHODE=== avec TYPE:, PARENT:, TITRE:, QUAND:, ETAPES:, RESTRICTIONS:, EXEMPLE:).":'')}],settings().effort&&settings().effort!=='low'?{effort:'low'}:null);
+    const raw=await callAI([{role:'system',content:sys()},{role:'user',content:skillPrompt(td,ex,exist,lite)+(t?"\n\nIMPORTANT : respecte STRICTEMENT le format (blocs ===METHODE=== avec TYPE:, PARENT:, TITRE:, QUAND:, ETAPES:, RESTRICTIONS:, EXEMPLE:).":'')}],{...(settings().effort&&settings().effort!=='low'?{effort:'low'}:{}),maxout:lite?8000:14000});
     items=parseSkills(raw);
   }
   if(!items.length) throw new Error(`${ex.label} : réponse illisible, réessaie.`);
@@ -1107,7 +1191,7 @@ async function skTry(td,ex,upd){
 /* ---------- actions ---------- */
 const v=id=>$('#'+id)?.value;
 async function run(label,fn){
-  st.busy=label;st.err='';render();
+  st.busy=label;st.err='';st.info='';render();
   try{await fn()}catch(e){st.err=e.message||String(e)}
   st.busy='';render();
 }
@@ -1193,7 +1277,7 @@ const A={
     const ex=curExo();ex.label=v('x-label')||ex.label;ex.text=v('x-text');
     const c=(v('x-clean')||'').trim();if(c!==(ex.clean||'').trim()){ex.clean=c;ex.trusted=!!c} // tu as modifié l'énoncé : il fait foi
     await saveTd(curTd());render()},
-  async validate(){const ex=curExo();ex.clean=(v('x-clean')||'').trim();ex.text=v('x-text');ex.trusted=!!ex.clean;await saveTd(curTd());render()},
+  async validate(){const ex=curExo();ex.clean=(v('x-clean')||'').trim();ex.text=v('x-text');ex.trusted=!!ex.clean;ex.lcheck=ex.clean?lmark(ex):undefined;await saveTd(curTd());render()},
   'show-imgs'(){st.showImgs=!st.showImgs;render()},
   async 'del-imgs'(){const ex=curExo();ex.imgs=[];await saveTd(curTd());render()},
   async 'read-img'(){
@@ -1292,10 +1376,33 @@ const A={
       if(!st.limits||st.limits.t<t0) throw new Error("Ce fournisseur n'expose pas les en-têtes de limite au navigateur : la limite exacte est visible sur son site (page « Limits » / « Rate limits »).");
     });
   },
+  async 'latex-all'(){
+    const td=curTd(),has=e=>(e.clean||'').trim(),txt=e=>(e.text||'').trim();
+    td.exos.forEach(e=>{if(has(e)) e.lcheck=lmark(e)});          // contrôle instantané de ce qui est déjà en LaTeX
+    const todo=td.exos.filter(e=>txt(e)&&!has(e)),noText=td.exos.filter(e=>!txt(e)&&!has(e));
+    const flagged=()=>td.exos.filter(e=>e.lcheck&&!e.lcheck.ok).length;
+    if(!todo.length){
+      await saveTd(td);
+      st.info=`Tous les exercices ont déjà un énoncé LaTeX. Contrôle : ${flagged()?flagged()+' à vérifier (repère ⚠ dans la liste).':'aucun problème détecté.'}`+(noText.length?` ${noText.length} exercice(s) sans texte : utilise « Lire avec l'image ».`:'');
+      return render();
+    }
+    await run('Mise en LaTeX…',async()=>{
+      let ok=0,fixed=0,fail=null;st.tmo=180000;
+      const upd=m=>{st.busy=m;const bb=$('.banner.busy');if(bb) bb.textContent='⏳ '+m;else render()};
+      try{
+        for(let i=0;i<todo.length&&!fail;i++){
+          upd(`Mise en LaTeX : ${todo[i].label} (${i+1}/${todo.length})…`);
+          try{const r=await latexTry(td,todo[i],upd);ok++;if(r.fixed) fixed++}catch(e){fail=e}
+        }
+      }finally{st.tmo=0}
+      st.info=`${ok}/${todo.length} énoncé(s) mis en LaTeX et contrôlés${fixed?` · ${fixed} corrigé(s) automatiquement`:''} · ${flagged()?flagged()+' à vérifier (repère ⚠ dans la liste, détail dans l\'exercice)':'aucun problème détecté'}.`+(noText.length?` ${noText.length} exercice(s) sans texte : utilise « Lire avec l'image ».`:'');
+      if(fail) throw new Error(fail.message+(ok?` — ${ok} énoncé(s) déjà converti(s).`:''));
+    });
+  },
   async 'clean-fast'(){
     const td=curTd(),ex=curExo(),raw=(v('x-text')||ex.text||'').trim();
     if(!raw){st.err="Le texte brut est vide : colle l'énoncé dans « Texte brut » ou utilise « Lire avec l'image ».";return render()}
-    ex.text=raw;ex.clean=quickLatex(raw);ex.trusted=false;await saveTd(td);st.err='';render()},
+    ex.text=raw;ex.clean=quickLatex(raw);ex.trusted=false;ex.lcheck=lmark(ex);await saveTd(td);st.err='';render()},
   async clean(){
     const td=curTd(),ex=curExo();
     if(!(ex.text||'').trim()){st.err="Le texte brut est vide : utilise « Lire avec l'image ».";return render()}
